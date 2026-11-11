@@ -1,0 +1,25 @@
+# One server, one owner. Copy next to a .env holding the variables below.
+services:
+  remote-agents:
+    image: buzz-remote-agents:latest # build: docker build -f image/Dockerfile -t buzz-remote-agents .
+    restart: unless-stopped
+    environment:
+      OWNER_PUBKEY: ${OWNER_PUBKEY}          # your pubkey, 64 hex
+      RELAY_URL: ${RELAY_URL}                # wss://your-relay.example.com
+      V1_TOKEN: ${V1_TOKEN}                  # the token in the plugin's config.json
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN}        # https://agents.example.com, optional
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+    volumes:
+      - agents:/agents
+    ports:
+      - "127.0.0.1:8090:8090" # put TLS in front; the plugin only talks https
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    # chown and setpriv need these to hand each agent its own uid, and KILL to
+    # stop an agent that runs as another uid.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+
+volumes:
+  agents:
