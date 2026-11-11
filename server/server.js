@@ -212,7 +212,8 @@ function ensureUser(slug, ids) {
 // only while the dir isn't the agent's yet, which is once: its first start under
 // its own uid. chown -R changes a directory after its contents, so a run cut
 // short is redone on the next start. -h chowns a symlink itself, never its target.
-// A symlink in place of the dir is refused: /tmp is shared, and chmod follows it.
+// A symlink in place of the dir is refused: an agent can plant one in its own
+// home, and chmod follows it.
 function claimDir(p, ids) {
   fs.mkdirSync(p, { recursive: true });
   if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`${p} is a symlink, not a dir`);
@@ -260,9 +261,9 @@ function buildEnv(meta) {
   const fixed = {
     PATH: process.env.PATH,
     HOME: path.join(AGENTS_DIR, meta.slug, 'home'),
-    // Every agent is a child of this one container: without this they would
-    // share its /tmp.
-    TMPDIR: path.join('/tmp', meta.slug),
+    // Under the agent's own root-owned dir, not /tmp: a sibling could
+    // pre-create a predictable /tmp/<slug> and have it chowned to this agent.
+    TMPDIR: path.join(AGENTS_DIR, meta.slug, 'tmp'),
     BUZZ_PRIVATE_KEY: a.private_key_nsec,
     BUZZ_RELAY_URL: a.relay_url,
     BUZZ_ACP_AGENT_OWNER: OWNER_PUBKEY,
@@ -313,7 +314,7 @@ function grokConfig(env) {
 function startChild(meta) {
   const home = path.join(AGENTS_DIR, meta.slug, 'home');
   const work = path.join(AGENTS_DIR, meta.slug, 'workspace');
-  const tmp = path.join('/tmp', meta.slug);
+  const tmp = path.join(AGENTS_DIR, meta.slug, 'tmp');
   const ids = agentIds(meta);
   ensureUser(meta.slug, ids);
   claimDir(home, ids);
@@ -426,7 +427,9 @@ function ownerAuthOk(auth) {
   );
 }
 
-// kind 0, signed with the agent's own key by the image's buzz CLI.
+// kind 0, signed with the agent's own key by the image's buzz CLI. It runs as
+// root, so its HOME is root's alone: in /tmp an agent could plant a symlink.
+const CLI_HOME = path.join(AGENTS_DIR, '.cli');
 function publishProfile(agent, name, picture) {
   const args = ['users', 'set-profile', '--name', name];
   if (picture) args.push('--avatar', picture);
@@ -438,7 +441,7 @@ function publishProfile(agent, name, picture) {
         timeout: 20000,
         env: {
           PATH: process.env.PATH,
-          HOME: '/tmp',
+          HOME: CLI_HOME,
           BUZZ_PRIVATE_KEY: agent.private_key_nsec,
           BUZZ_RELAY_URL: agent.relay_url,
           ...(agent.auth_tag ? { BUZZ_AUTH_TAG: agent.auth_tag } : {}),
@@ -654,6 +657,10 @@ const server = http.createServer((req, res) => {
 fs.mkdirSync(AGENTS_DIR, { recursive: true });
 fs.chownSync(AGENTS_DIR, 0, 0);
 fs.chmodSync(AGENTS_DIR, 0o755);
+fs.mkdirSync(CLI_HOME, { recursive: true, mode: 0o700 });
+if (fs.lstatSync(CLI_HOME).isSymbolicLink()) throw new Error(`${CLI_HOME} is a symlink, not a dir`);
+fs.chownSync(CLI_HOME, 0, 0);
+fs.chmodSync(CLI_HOME, 0o700);
 // Every agent goes in the map before any starts: startChild saves state when
 // it allocates a uid, and a save writes only what is in the map.
 for (const meta of loadState()) agents.set(meta.slug, { meta, child: null });

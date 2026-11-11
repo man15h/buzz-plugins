@@ -34,7 +34,8 @@ when you start a turn in a shared thread.
 
 - **One uid per agent**, from `AGENT_UID_BASE` up, kept in `state.json` and
   reserved while the agent is archived. An agent's `home`, `workspace` and
-  `/tmp/<slug>` are its own, mode 0700.
+  `tmp` under `AGENTS_DIR/<slug>` are its own, mode 0700; `TMPDIR` points at
+  that `tmp`, never at the shared `/tmp`.
 - **State is root's.** `state.json` and the archive hold every agent's key at
   mode 0600; no agent can read them.
 - **No privilege back.** The server starts each agent with `setpriv`, with
@@ -45,7 +46,10 @@ when you start a turn in a shared thread.
 ## Hooks
 
 `HOOKS` names a module that exports `(api) => hooks`. It runs inside the
-server, as root, and is trusted like the server itself. `api` has `list()`,
+server, as root, and is trusted like the server itself. **Keep secrets out of
+the file**: agents run in the same container and can read it unless it is
+mounted root-only (0700 dir, 0600 file). Read secrets from the server's env
+instead. `api` has `list()`,
 `restart(pubkey)`, `stop(pubkey)` and `agentsDir`. Every hook is optional:
 
 | Hook | When | Returns |
