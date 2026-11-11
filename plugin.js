@@ -159,18 +159,169 @@ export function apply(ctx) {
       "div",
       { style: { display: "grid", gap: "var(--space-3, 12px)" } },
       note("Turns captured while Buzz has been open, newest first."),
-      ...turns.map((turn) =>
+      ...turns.map((turn) => h(Turn, { key: turn.turnId, turn })),
+    );
+  }
+
+  // Tabler outline paths, the icon set Buzz itself uses.
+  function icon(name, size = 16, style) {
+    return h(
+      "svg",
+      {
+        width: size,
+        height: size,
+        viewBox: "0 0 24 24",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 2,
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        "aria-hidden": true,
+        className: name === "loader-2" ? "animate-spin" : undefined,
+        style: { flexShrink: 0, ...style },
+      },
+      ...ICONS[name].map((d) => h("path", { key: d, d })),
+    );
+  }
+
+  function Turn({ turn }) {
+    const [label, name, color] = pick(STATES, turn.state, "working");
+    return h(
+      "section",
+      {
+        className: "ui-card",
+        style: { display: "grid", gap: "var(--space-2, 8px)", padding: "var(--space-panel-inset, 12px)" },
+      },
+      h(
+        "header",
+        {
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-2, 8px)",
+            paddingBottom: "var(--space-2, 8px)",
+            borderBottom: "1px solid var(--border)",
+          },
+        },
         h(
-          "section",
-          { key: turn.turnId, className: "ui-card", style: { padding: "var(--space-panel-inset, 12px)" } },
-          h("strong", null, `${new Date(turn.startedAt).toLocaleTimeString()} · ${turn.state}`),
-          ...turn.items.map((item, index) =>
-            item.type === "tool"
-              ? h("p", { key: index, className: "text-secondary" }, `${item.title || "Tool"} · ${item.status || "pending"}`)
-              : h("p", { key: index, style: { whiteSpace: "pre-wrap" } }, item.text),
-          ),
+          "span",
+          { style: { display: "inline-flex", alignItems: "center", gap: "6px", fontWeight: 500, color } },
+          icon(name),
+          label,
+        ),
+        h(
+          "time",
+          { style: { marginLeft: "auto", color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" } },
+          new Date(turn.startedAt).toLocaleTimeString(),
         ),
       ),
+      ...turn.items.map((item, index) =>
+        item.type === "tool"
+          ? h(Tool, { key: index, item })
+          : h("p", { key: index, style: { margin: 0, whiteSpace: "pre-wrap" } }, item.text),
+      ),
+    );
+  }
+
+  // One tool call: kind icon, title clamped to two lines, status chip. A
+  // clamped row expands on click.
+  function Tool({ item }) {
+    const [open, setOpen] = React.useState(false);
+    const [clamped, setClamped] = React.useState(false);
+    const title = React.useRef(null);
+    React.useLayoutEffect(() => {
+      const node = title.current;
+      if (!node || open) return;
+      const measure = () => setClamped(node.scrollHeight > node.clientHeight + 1);
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(node);
+      return () => observer.disconnect();
+    }, [item.title, open]);
+    const failed = item.status === "failed";
+    const [label, name] = pick(STATUS, item.status, "pending");
+    const toggle = () => setOpen((value) => !value);
+    const expandable = clamped || open;
+    return h(
+      "div",
+      {
+        ...(expandable
+          ? {
+              role: "button",
+              tabIndex: 0,
+              "aria-expanded": open,
+              onClick: toggle,
+              onKeyDown: (event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                toggle();
+              },
+            }
+          : {}),
+        style: {
+          display: "grid",
+          gridTemplateColumns: "16px minmax(0, 1fr) auto",
+          columnGap: "var(--space-2, 8px)",
+          alignItems: "start",
+          color: failed ? "var(--text-danger)" : "var(--text-secondary)",
+          cursor: expandable ? "pointer" : undefined,
+        },
+      },
+      icon(pick(KINDS, item.kind, "other"), 16, { marginTop: "2px" }),
+      h(
+        "span",
+        {
+          ref: title,
+          style: {
+            fontFamily: "var(--font-mono, monospace)",
+            fontSize: "0.78125rem",
+            lineHeight: "1.25rem",
+            color: failed ? "var(--text-danger)" : "var(--text-primary)",
+            overflowWrap: "anywhere",
+            ...(open
+              ? { whiteSpace: "pre-wrap" }
+              : { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 2, overflow: "hidden" }),
+          },
+        },
+        item.title || "Tool",
+      ),
+      h(
+        "span",
+        {
+          style: {
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "4px",
+            height: "20px",
+            padding: "0 8px 0 6px",
+            borderRadius: "var(--radius-chip, 0.75rem)",
+            background: failed ? "var(--affordance-danger)" : "var(--affordance-subtle)",
+            boxShadow: failed ? "inset 0 0 0 1px var(--border-danger)" : undefined,
+            color: failed ? "var(--text-danger)" : "var(--text-secondary)",
+            fontSize: "0.75rem",
+            fontWeight: 500,
+            whiteSpace: "nowrap",
+          },
+        },
+        icon(name, 12),
+        label,
+      ),
+      expandable &&
+        h(
+          "span",
+          {
+            style: {
+              gridColumn: 2,
+              justifySelf: "start",
+              fontSize: "0.75rem",
+              fontWeight: 500,
+              textDecoration: "underline",
+              textUnderlineOffset: "2px",
+              color: "var(--text-secondary)",
+            },
+          },
+          open ? "Show less" : "Show more",
+        ),
     );
   }
 
@@ -210,6 +361,48 @@ export function apply(ctx) {
 
 const noSubscribe = () => () => {};
 
+// ACP tool kinds; anything else, or no kind, shows as "other".
+const KINDS = {
+  execute: "terminal-2",
+  fetch: "world",
+  read: "file-text",
+  edit: "pencil",
+  search: "search",
+  think: "bulb",
+  delete: "trash",
+  move: "arrows-move",
+  other: "tool",
+};
+const STATUS = {
+  pending: ["Pending", "clock-hour-4"],
+  in_progress: ["Running", "loader-2"],
+  completed: ["Done", "circle-check"],
+  failed: ["Failed", "circle-x"],
+};
+const STATES = {
+  working: ["Working", "loader-2", "var(--text-primary)"],
+  ended: ["Ended", "circle-check", "var(--text-secondary)"],
+  error: ["Error", "circle-x", "var(--text-danger)"],
+};
+// Own keys only: kind and status come from the agent.
+const pick = (table, key, fallback) => table[Object.hasOwn(table, key) ? key : fallback];
+// From @tabler/icons 3.46.0 (MIT), outline.
+const ICONS = {
+  "terminal-2": ["M8 9l3 3l-3 3", "M13 15l3 0", "M3 6a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2l0 -12"],
+  world: ["M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0", "M3.6 9h16.8", "M3.6 15h16.8", "M11.5 3a17 17 0 0 0 0 18", "M12.5 3a17 17 0 0 1 0 18"],
+  "file-text": ["M14 3v4a1 1 0 0 0 1 1h4", "M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2", "M9 9l1 0", "M9 13l6 0", "M9 17l6 0"],
+  pencil: ["M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4", "M13.5 6.5l4 4"],
+  search: ["M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0", "M21 21l-6 -6"],
+  bulb: ["M3 12h1m8 -9v1m8 8h1m-15.4 -6.4l.7 .7m12.1 -.7l-.7 .7", "M9 16a5 5 0 1 1 6 0a3.5 3.5 0 0 0 -1 3a2 2 0 0 1 -4 0a3.5 3.5 0 0 0 -1 -3", "M9.7 17l4.6 0"],
+  trash: ["M4 7l16 0", "M10 11l0 6", "M14 11l0 6", "M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12", "M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"],
+  "arrows-move": ["M18 9l3 3l-3 3", "M15 12h6", "M6 9l-3 3l3 3", "M3 12h6", "M9 18l3 3l3 -3", "M12 15v6", "M15 6l-3 -3l-3 3", "M12 3v6"],
+  tool: ["M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5"],
+  "clock-hour-4": ["M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0", "M12 12l3 2", "M12 7v5"],
+  "loader-2": ["M12 3a9 9 0 1 0 9 9"],
+  "circle-check": ["M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0", "M9 12l2 2l4 -4"],
+  "circle-x": ["M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0", "M10 10l4 4m0 -4l-4 4"],
+};
+
 // A small reading of the owner-only observer frames: each turn's messages and
 // tool calls. Frames are a single event or a {kind: "batch"} envelope.
 function transcript(records, pubkey) {
@@ -242,10 +435,11 @@ function transcript(records, pubkey) {
         if (typeof update.toolCallId !== "string") continue;
         let tool = turn.tools.get(update.toolCallId);
         if (!tool) {
-          tool = { type: "tool", title: "", status: "" };
+          tool = { type: "tool", kind: "", title: "", status: "" };
           turn.tools.set(update.toolCallId, tool);
           turn.items.push(tool);
         }
+        if (typeof update.kind === "string") tool.kind = update.kind;
         if (typeof update.title === "string") tool.title = update.title;
         if (typeof update.status === "string") tool.status = update.status;
       }
