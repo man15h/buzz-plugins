@@ -1,0 +1,14 @@
+{
+  "id": "remote-agents",
+  "name": "Remote agents",
+  "apiVersion": 1,
+  "description": "Create and manage agents that run on your own server, which keeps their keys.",
+  "discovery": {
+    "category": "agent-tools",
+    "tags": ["agents", "self-hosted"]
+  },
+  "host": {
+    "networkOrigins": ["https://deployer.example.com"],
+    "files": true
+  }
+}
