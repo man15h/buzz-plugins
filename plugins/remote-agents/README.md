@@ -54,9 +54,11 @@ upstream. If it did, put your origin back before updating.
 - **An agent your server already runs:** pick it under **Existing agent**.
   Buzz signs a fresh owner attestation for it. The server may restart it once
   to pick that up.
-- **Activity:** draws each turn the way Buzz's own Activity pane does, newest
-  turn first. Inside a turn the request and plan come first, then the steps,
-  newest first. Works best with the Agent Activity plugin on as well. It shows
+- **Activity:** draws each turn the way Buzz's own Activity pane does, as a
+  card headed by its state, channel, the thread's first line and elapsed time.
+  Running turns come first, newest started on top; only the top one starts
+  open, and the others fold to their latest step. Ended turns follow. Inside a
+  turn the request and plan come first, then the steps, newest first. Works best with the Agent Activity plugin on as well. It shows
   only turns that happened while Buzz was open.
 - **Not available:** stopping a single turn, and editing instructions from
   Buzz.

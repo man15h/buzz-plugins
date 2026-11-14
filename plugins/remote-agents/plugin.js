@@ -10,7 +10,8 @@
 // ActivityTranscript.module.css, licensed Apache-2.0 (LICENSE-Apache-2.0
 // here). Changed: plain JS with no imports, prefixed class names, replies as
 // plain text instead of Markdown, initials instead of avatars, turns newest
-// first, and inside a turn the steps after the request and plan newest first.
+// first as labelled cards with running ones on top, and inside a turn the
+// steps after the request and plan newest first.
 
 export const inject = ["agents", "host", "react", "relay"];
 
@@ -167,6 +168,13 @@ export function apply(ctx) {
         ),
       [snapshot.turns, agent.pubkey],
     );
+    // Running turns sort by start, newest first, so cards hold still as
+    // steps land. Only the top one starts open.
+    const live = turns.filter((turn) => !turn.endedAt && states.get(turn.turnId) === "working");
+    const ended = turns.filter((turn) => !live.includes(turn));
+    const [toggled, setToggled] = React.useState(() => new Map());
+    const now = useClock(live.length > 0);
+    const channels = useChannels(session);
     if (!activity) return note("Activity shows once Buzz is connected.");
     if (snapshot.status === "unavailable") return note("Activity isn't available here.");
     if (!turns.length)
@@ -175,26 +183,98 @@ export function apply(ctx) {
           ? "Connecting to the live feed…"
           : "No turns yet. Turns show as they happen while Buzz is open.",
       );
+    const card = (turn) =>
+      h(
+        React.Fragment,
+        { key: turn.turnId },
+        h(Turn, {
+          turn,
+          state: turn.endedAt ? "ended" : (states.get(turn.turnId) ?? "unknown"),
+          agentName: agent.name || "Agent",
+          openConversation,
+          session,
+          channel: channels.get(turn.channelId),
+          now,
+          open: toggled.get(turn.turnId) ?? turn === live[0],
+          onToggle: (open) => setToggled((previous) => new Map(previous).set(turn.turnId, open)),
+        }),
+        // Below its turn: newest first, the session began before it.
+        turn.newSession && h("p", { className: "text-body rat-session" }, "New session"),
+      );
     return h(
       "div",
       { className: "text-body rat-timeline" },
       h("style", null, CSS),
-      note("Turns captured while Buzz has been open, newest first."),
-      ...turns.map((turn) =>
-        h(
-          React.Fragment,
-          { key: turn.turnId },
-          h(Turn, {
-            turn,
-            state: turn.endedAt ? "ended" : (states.get(turn.turnId) ?? "unknown"),
-            agentName: agent.name || "Agent",
-            openConversation,
-          }),
-          // Below its turn: newest first, the session began before it.
-          turn.newSession && h("p", { className: "text-body rat-session" }, "New session"),
-        ),
-      ),
+      note("Turns captured while Buzz has been open. Running ones first, newest first."),
+      live.length > 0 && h("h3", { className: "text-caption rat-group" }, `${live.length} running`),
+      ...live.map(card),
+      ended.length > 0 && live.length > 0 && h("h3", { className: "text-caption rat-group" }, "Ended"),
+      ...ended.map(card),
     );
+  }
+
+  // A second clock for running cards' elapsed time, only while one runs.
+  function useClock(running) {
+    const [now, setNow] = React.useState(() => Date.now());
+    React.useEffect(() => {
+      if (!running) return;
+      setNow(Date.now());
+      const timer = setInterval(() => setNow(Date.now()), 1000);
+      return () => clearInterval(timer);
+    }, [running]);
+    return now;
+  }
+
+  // The viewer's channels by id, for card labels.
+  function useChannels(session) {
+    const queries = session?.channels;
+    const list = React.useSyncExternalStore(
+      queries?.subscribeList ?? noSubscribe,
+      queries?.list ?? noChannels,
+    );
+    return React.useMemo(() => new Map((list.channels ?? []).map((channel) => [channel.id, channel])), [list]);
+  }
+
+  // The first line of a thread's root message. Frames carry only the root's
+  // id, so read it once through a short-lived exact view, as Buzz's link
+  // previews do, and keep the line for the session.
+  function useRootLine(session, channelId, rootId) {
+    const key = `${channelId}:${rootId}`;
+    const [text, setText] = React.useState(() => rootLines.get(key));
+    React.useEffect(() => {
+      if (!session?.thread || !channelId || !rootId) return;
+      if (rootLines.has(key)) {
+        setText(rootLines.get(key));
+        return;
+      }
+      let view;
+      try {
+        view = session.thread(channelId, rootId, { exact: true });
+      } catch {
+        return; // No view capacity or no access: the prompt's line stands.
+      }
+      let done = false;
+      let stop;
+      const read = () => {
+        const snapshot = view.snapshot();
+        const message = snapshot.target ?? snapshot.root;
+        if (done || !message) return;
+        done = true;
+        rootLines.set(key, line(message.content));
+        setText(rootLines.get(key));
+        stop();
+        view.dispose();
+      };
+      stop = view.subscribe(read);
+      view.refresh().catch(() => {});
+      read();
+      return () => {
+        if (done) return;
+        stop();
+        view.dispose();
+      };
+    }, [session, channelId, rootId, key]);
+    return text;
   }
 
   // Tabler outline paths, the icon set Buzz itself uses.
@@ -232,9 +312,11 @@ export function apply(ctx) {
     );
   }
 
-  // One turn. Its request, system prompt and plan stay first; the steps after
-  // them run newest first.
-  function Turn({ turn, state, agentName, openConversation }) {
+  // One turn as a card. The header names its state, channel and thread, and
+  // opens or folds it. Open, the request, system prompt and plan stay first
+  // and the steps after them run newest first. Folded, a running turn shows
+  // its latest step and a failed one its error.
+  function Turn({ turn, state, agentName, openConversation, session, channel, now, open, onToggle }) {
     const { channelId, threadRootId } = turn;
     const openPlace =
       openConversation && channelId && threadRootId !== undefined
@@ -254,7 +336,8 @@ export function apply(ctx) {
                 : turn.endedAt
                   ? "Completed"
                   : "Status unknown";
-    const tone = status === "Failed" ? "failed" : status === "Completed" ? "completed" : "unknown";
+    const tone =
+      status === "Failed" ? "failed" : status === "Completed" ? "completed" : status === "Working" ? "working" : "unknown";
     const pinned = [];
     const steps = [];
     for (const item of turn.items)
@@ -263,24 +346,45 @@ export function apply(ctx) {
       );
     steps.reverse();
     const entry = (item) => h(Entry, { key: item.id, item, agentName });
+    const request = pinned.find((item) => item.type === "prompt");
+    const rootLine = useRootLine(session, channelId, threadRootId);
+    // A thread's root, else the request: a top-level mention is its own root.
+    const subjectLine = rootLine || (request ? line(request.text) : "");
+    const place = channel ? (channel.hidden ? channel.name : `#${channel.name}`) : channelId ? "Channel" : "";
+    const meta = turn.endedAt
+      ? `${duration(turn.endedAt - turn.startedAt)} · ${time(turn.endedAt)}`
+      : known(turn.startedAt) && state === "working"
+        ? duration(Math.max(0, now - turn.startedAt))
+        : "";
+    const error =
+      turn.error &&
+      h("p", { role: "note", className: "rat-row rat-error" }, icon("alert-circle"), h("span", { className: "rat-text" }, turn.error));
     return h(
       "article",
-      { className: "rat-turn", "aria-label": known(turn.startedAt) ? `Turn ${time(turn.startedAt)}` : "Turn" },
-      state !== "working" &&
-        h(
-          "header",
-          { className: "text-body rat-statusRow rat-row", "data-status": tone },
-          icon(tone === "failed" ? "circle-x" : tone === "completed" ? "circle-check" : "help-circle"),
-          h("span", null, status),
-          !!turn.endedAt &&
-            h(
-              "span",
-              { className: "rat-statusMeta" },
-              `${duration(turn.endedAt - turn.startedAt)} · `,
-              h("time", { dateTime: new Date(turn.endedAt).toISOString() }, time(turn.endedAt)),
-            ),
+      { className: "rat-turn rat-card", "aria-label": known(turn.startedAt) ? `Turn ${time(turn.startedAt)}` : "Turn" },
+      h(
+        "button",
+        {
+          type: "button",
+          className: "text-body rat-statusRow rat-row rat-cardHeader",
+          "data-status": tone,
+          "aria-expanded": open,
+          onClick: () => onToggle(!open),
+        },
+        icon(
+          { failed: "circle-x", completed: "circle-check", working: "dots" }[tone] ??
+            (status === "Stopped" ? "square" : "help-circle"),
         ),
-      openConversation &&
+        h("span", { className: "rat-cardState" }, status),
+        place && h("span", { className: "rat-cardPlace" }, place),
+        subjectLine && h("span", { className: "rat-cardSubject" }, `· ${subjectLine}`),
+        meta && h("span", { className: "rat-cardMeta" }, meta),
+        icon("chevron-right", 16, { className: "rat-chevron" }),
+      ),
+      !open && state === "working" && steps.length > 0 && entry(steps[0]),
+      !open && error,
+      open &&
+        openConversation &&
         h(
           "div",
           { className: "text-body text-secondary" },
@@ -288,29 +392,15 @@ export function apply(ctx) {
             ? h(
                 "button",
                 { type: "button", className: "rat-link", onClick: openPlace },
-                turn.threadRootId ? `Thread ${turn.threadRootId.slice(0, 8)}` : "Channel",
+                turn.threadRootId ? "Open thread" : "Open channel",
               )
             : "Conversation unknown",
         ),
-      turn.partial && h("p", { className: "text-body text-secondary" }, "The start of this turn isn't loaded."),
-      ...pinned.map(entry),
-      (steps.length > 0 || state === "working" || turn.error) &&
-        h("p", { className: "text-body rat-session" }, "Newest first"),
-      state === "working" &&
-        h(
-          "p",
-          { className: "rat-row rat-statusRow text-body", "data-status": "working" },
-          h("span", { className: "rat-workingIcon text-accent" }, icon("loader-2", 16, { className: "animate-spin" })),
-          h("span", null, "Working"),
-        ),
-      turn.error &&
-        h(
-          "p",
-          { role: "note", className: "rat-row rat-error" },
-          icon("alert-circle"),
-          h("span", { className: "rat-text" }, turn.error),
-        ),
-      ...steps.map(entry),
+      open && turn.partial && h("p", { className: "text-body text-secondary" }, "The start of this turn isn't loaded."),
+      ...(open ? pinned.map(entry) : []),
+      open && (steps.length > 0 || turn.error) && h("p", { className: "text-body rat-session" }, "Newest first"),
+      open && error,
+      ...(open ? steps.map(entry) : []),
     );
   }
 
@@ -554,6 +644,9 @@ export function apply(ctx) {
 }
 
 const noSubscribe = () => () => {};
+const noChannels = () => ({ channels: [] });
+// Thread root first lines by "channel:root", kept while the plugin runs.
+const rootLines = new Map();
 
 // ACP tool kinds; anything else, or no kind, shows as "other".
 const KINDS = {
@@ -598,12 +691,12 @@ const ICONS = {
   bulb: ["M3 12h1m8 -9v1m8 8h1m-15.4 -6.4l.7 .7m12.1 -.7l-.7 .7", "M9 16a5 5 0 1 1 6 0a3.5 3.5 0 0 0 -1 3a2 2 0 0 1 -4 0a3.5 3.5 0 0 0 -1 -3", "M9.7 17l4.6 0"],
   trash: ["M4 7l16 0", "M10 11l0 6", "M14 11l0 6", "M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12", "M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"],
   tool: ["M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5"],
-  "loader-2": ["M12 3a9 9 0 1 0 9 9"],
   "circle-check": ["M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0", "M9 12l2 2l4 -4"],
   "circle-x": ["M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0", "M10 10l4 4m0 -4l-4 4"],
   "help-circle": ["M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0", "M12 16v.01", "M12 13a2 2 0 0 0 .914 -3.782a1.98 1.98 0 0 0 -2.414 .483"],
   "alert-circle": ["M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0", "M12 8v4", "M12 16h.01"],
   "chevron-right": ["M9 6l6 6l-6 6"],
+  square: ["M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14z"],
   dots: ["M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0", "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0", "M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"],
   "list-check": ["M3.5 5.5l1.5 1.5l2.5 -2.5", "M3.5 11.5l1.5 1.5l2.5 -2.5", "M3.5 17.5l1.5 1.5l2.5 -2.5", "M11 6l9 0", "M11 12l9 0", "M11 18l9 0"],
   shield: ["M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"],
@@ -673,16 +766,9 @@ html[data-keyboard-navigation] .rat-tool > summary:focus-visible, html[data-keyb
   summary:hover > .rat-at, summary:focus-visible > .rat-at, summary:hover > .rat-chevron, summary:focus-visible > .rat-chevron { opacity: 1; }
 }
 .rat-item[data-type="prompt"] .rat-toolBody, .rat-item[data-type="message"] .rat-toolBody { color: var(--text-primary); }
-.rat-workingIcon { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: var(--space-4); height: var(--space-4); }
 .rat-statusRow { align-items: center; min-height: var(--space-7); margin-inline: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); border-radius: var(--radius-row); background: var(--affordance-subtle); color: var(--text-secondary); }
 .rat-statusRow[data-status="completed"] { background: var(--surface-status-success); color: var(--text-on-status-success); }
 .rat-statusRow[data-status="failed"] { background: var(--surface-status-danger); color: var(--text-on-status); }
-.rat-statusRow[data-status="working"] { background: var(--affordance-accent); color: var(--text-accent); }
-.rat-statusMeta { font: inherit; margin-inline-start: auto; font-variant-numeric: tabular-nums; }
-@media (hover: hover) and (pointer: fine) {
-  .rat-statusMeta { opacity: 0; }
-  .rat-statusRow:hover .rat-statusMeta, .rat-turn:focus-within .rat-statusMeta { opacity: 1; }
-}
 .rat-codePanel { overflow: hidden; background: var(--surface-inset); border: 1px solid var(--border-standard); border-radius: var(--radius-lg); }
 .rat-codePanelHeading { margin: 0; padding: var(--space-2) var(--space-3); border-block-end: 1px solid var(--border-standard); }
 .rat-codePanel > .rat-pre { margin: 0; border: 0; border-radius: 0; }
@@ -691,11 +777,20 @@ html[data-keyboard-navigation] .rat-tool > summary:focus-visible, html[data-keyb
   html:not([data-keyboard-navigation]) .rat-chevron { transition: transform var(--duration-fast) var(--easing-enter); }
 }
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
-  html:not([data-keyboard-navigation]) .rat-at, html:not([data-keyboard-navigation]) .rat-statusMeta { transition: opacity var(--duration-fast) var(--easing-enter); }
+  html:not([data-keyboard-navigation]) .rat-at { transition: opacity var(--duration-fast) var(--easing-enter); }
   html:not([data-keyboard-navigation]) .rat-chevron { transition: transform var(--duration-fast) var(--easing-enter), opacity var(--duration-fast) var(--easing-enter); }
 }
 .rat-avatar > span { display: grid; place-items: center; width: 100%; height: 100%; border-radius: 50%; background: var(--affordance-subtle); color: var(--text-secondary); font-size: 0.5625rem; font-weight: 600; line-height: 1; }
 .rat-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.rat-group { margin: 0 auto calc(-1 * var(--space-3)); width: 100%; max-width: 48rem; color: var(--text-subtle); text-transform: uppercase; letter-spacing: 0.04em; }
+.rat-card { padding: var(--space-3) var(--space-4); border: 1px solid var(--border-standard); border-radius: var(--radius-lg); box-sizing: border-box; }
+.rat-cardHeader { width: calc(100% + 2 * var(--space-2)); border: 0; font: inherit; text-align: start; cursor: pointer; }
+.rat-cardState, .rat-cardPlace { flex-shrink: 0; font-weight: 600; }
+.rat-cardSubject { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rat-cardMeta { flex-shrink: 0; margin-inline-start: auto; font-variant-numeric: tabular-nums; }
+.rat-cardHeader > .rat-chevron { opacity: 1; color: inherit; }
+.rat-cardHeader[aria-expanded="true"] > .rat-chevron { transform: rotate(90deg); }
+html[data-keyboard-navigation] .rat-cardHeader:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 `;
 
 const line = (text) => text.split("\n").find(Boolean)?.trim() ?? "";
