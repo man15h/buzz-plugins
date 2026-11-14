@@ -236,8 +236,8 @@ export function apply(ctx) {
   }
 
   // The first line of a thread's root message. Frames carry only the root's
-  // id, so read it once through a short-lived exact view, as Buzz's link
-  // previews do, and keep the line for the session.
+  // id, so read it through a short-lived exact view, as Buzz's link previews
+  // do, and keep the line for the session.
   function useRootLine(session, channelId, rootId) {
     const key = `${channelId}:${rootId}`;
     const [text, setText] = React.useState(() => rootLines.get(key));
@@ -247,32 +247,7 @@ export function apply(ctx) {
         setText(rootLines.get(key));
         return;
       }
-      let view;
-      try {
-        view = session.thread(channelId, rootId, { exact: true });
-      } catch {
-        return; // No view capacity or no access: the prompt's line stands.
-      }
-      let done = false;
-      let stop;
-      const read = () => {
-        const snapshot = view.snapshot();
-        const message = snapshot.target ?? snapshot.root;
-        if (done || !message) return;
-        done = true;
-        rootLines.set(key, line(message.content));
-        setText(rootLines.get(key));
-        stop();
-        view.dispose();
-      };
-      stop = view.subscribe(read);
-      view.refresh().catch(() => {});
-      read();
-      return () => {
-        if (done) return;
-        stop();
-        view.dispose();
-      };
+      return readRootLine(session, channelId, rootId, setText);
     }, [session, channelId, rootId, key]);
     return text;
   }
@@ -644,9 +619,71 @@ export function apply(ctx) {
 }
 
 const noSubscribe = () => () => {};
-const noChannels = () => ({ channels: [] });
+const emptyChannels = { channels: [] };
+const noChannels = () => emptyChannels;
 // Thread root first lines by "channel:root", kept while the plugin runs.
 const rootLines = new Map();
+// Open root reads by "channel:root". Every card on a thread shares one view,
+// since views count against the session's ceiling with Buzz's own threads.
+const rootReads = new Map();
+
+// Calls onLine with the root's first line once it loads. The view closes
+// when the line is found, the read stops, or no card wants it any more.
+function readRootLine(session, channelId, rootId, onLine) {
+  const key = `${channelId}:${rootId}`;
+  let read = rootReads.get(key);
+  if (!read) {
+    let view;
+    try {
+      view = session.thread(channelId, rootId, { exact: true });
+    } catch {
+      return; // No view capacity or no access: the prompt's line stands.
+    }
+    const opened = { key, view, wants: new Set(), stop: () => {}, closed: false };
+    rootReads.set(key, opened);
+    const stop = view.subscribe(() => checkRootRead(opened));
+    if (opened.closed) stop();
+    else opened.stop = stop;
+    view.refresh().catch(() => {});
+    read = opened;
+  }
+  const wanted = read;
+  wanted.wants.add(onLine);
+  if (rootLines.has(key)) onLine(rootLines.get(key));
+  else checkRootRead(wanted);
+  return () => {
+    wanted.wants.delete(onLine);
+    if (!wanted.wants.size) closeRootRead(wanted);
+  };
+}
+
+function checkRootRead(read) {
+  if (read.closed) return;
+  const snapshot = read.view.snapshot();
+  const message = snapshot.target ?? snapshot.root;
+  if (message) {
+    rootLines.set(read.key, line(message.content));
+    for (const want of read.wants) want(rootLines.get(read.key));
+    closeRootRead(read);
+  } else if (rootReadStopped(snapshot)) closeRootRead(read);
+}
+
+function closeRootRead(read) {
+  if (read.closed) return;
+  read.closed = true;
+  if (rootReads.get(read.key) === read) rootReads.delete(read.key);
+  read.stop();
+  read.view.dispose();
+}
+
+// A read error, a denied or unavailable root, or a finished read that never
+// found it: the terminal states Buzz's own linked-message previews stop on.
+const rootReadStopped = (snapshot) =>
+  snapshot.status === "error" ||
+  snapshot.targetStatus === "error" ||
+  snapshot.targetStatus === "unavailable" ||
+  (snapshot.status === "idle" && snapshot.error !== undefined) ||
+  (snapshot.status === "ready" && !snapshot.canLoadMore);
 
 // ACP tool kinds; anything else, or no kind, shows as "other".
 const KINDS = {
