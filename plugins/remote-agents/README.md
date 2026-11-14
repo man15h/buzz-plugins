@@ -54,7 +54,9 @@ upstream. If it did, put your origin back before updating.
 - **An agent your server already runs:** pick it under **Existing agent**.
   Buzz signs a fresh owner attestation for it. The server may restart it once
   to pick that up.
-- **Activity:** works best with the Agent Activity plugin on as well. It shows
+- **Activity:** draws each turn the way Buzz's own Activity pane does, newest
+  turn first. Inside a turn the request and plan come first, then the steps,
+  newest first. Works best with the Agent Activity plugin on as well. It shows
   only turns that happened while Buzz was open.
 - **Not available:** stopping a single turn, and editing instructions from
   Buzz.
@@ -100,3 +102,5 @@ anyone other than the configured owner.
 - `plugin.js`: the plugin. Plain JavaScript, no build step.
 - `manifest.json`: the plugin manifest, with a placeholder origin.
 - `config.example.json`: the shape of `~/.config/buzz-remote-agents/config.json`.
+- `LICENSE-Apache-2.0`: the licence of the Activity transcript code, which is
+  ported from buzz-app (the note at the top of `plugin.js` names the source).
