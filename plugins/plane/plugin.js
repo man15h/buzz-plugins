@@ -1,7 +1,7 @@
-// Plane: a self-hosted Plane workspace in Buzz. A board page, your open cards
-// in the sidebar, and a preview and side panel for Plane card links, each
-// with a state you can move. It calls Plane's REST API (/api/v1) with an API
-// key kept in the macOS Keychain through `security` (manifest commands).
+// Plane: a self-hosted Plane workspace in Buzz. A board page in the left dock,
+// and a preview and side panel for Plane card links, each with a state you
+// can move. It calls Plane's REST API (/api/v1) with an API key kept in the
+// macOS Keychain through `security` (manifest commands).
 //
 // SERVER is the manifest's placeholder origin. A server that serves this
 // plugin swaps both for its Plane origin; installing from a folder, change
@@ -14,11 +14,9 @@ const WORKSPACE_KEY = "buzz-plane.workspace";
 const PROJECT_KEY = "buzz-plane.project";
 // Plane's state groups, in board order. Cancelled is left off the board.
 const GROUPS = ["backlog", "unstarted", "started", "completed", "cancelled"];
-const OPEN = new Set(["backlog", "unstarted", "started"]);
 const EXPAND = "expand=assignees,labels,state,estimate_point";
 // Plane allows an API key 60 calls a minute, so lists are shared for a while.
 const FRESH_MS = 60 * 1000;
-const REFRESH_MS = 5 * 60 * 1000;
 const REASONS = { 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 429: "Too Many Requests" };
 
 class PlaneError extends Error {
@@ -38,7 +36,7 @@ export function apply(ctx) {
   // The Settings card's section id is its contribution key.
   const SETTINGS = { version: 1, kind: "settings", section: `${pluginId}/plane` };
 
-  // ---- Shared state: the key, the connection, my cards ----------------------
+  // ---- Shared state: the key and the connection ------------------------------
 
   let apiKey = "";
   let generation = 0;
@@ -46,9 +44,6 @@ export function apply(ctx) {
     key: "checking", // checking | missing | saved
     connection: { status: "checking" },
     workspace: stored(WORKSPACE_KEY),
-    me: undefined,
-    mine: [],
-    mineError: "",
     moved: 0, // counts moves, so the board reloads its list
   };
   const listeners = new Set();
@@ -106,8 +101,7 @@ export function apply(ctx) {
     generation++;
     cards.clear();
     forget();
-    set({ key: "missing", connection: { status: "missing" }, me: undefined });
-    setMine([]);
+    set({ key: "missing", connection: { status: "missing" } });
   }
 
   function saveWorkspace(value) {
@@ -200,32 +194,32 @@ export function apply(ctx) {
   const cardId = (project, issue) => `${project?.identifier ?? "?"}-${issue.sequence_id}`;
   const browseUrl = (slug, id) => `${origin}/${encodeURIComponent(slug)}/browse/${id}/`;
 
-  // ---- Connection and my cards -----------------------------------------------
+  // ---- Connection --------------------------------------------------------------
 
   async function check() {
     const run = ++generation;
     const current = () => run === generation;
     const workspace = state.workspace;
-    if (!apiKey) return set({ connection: { status: "missing" }, me: undefined });
+    if (!apiKey) return set({ connection: { status: "missing" } });
     set({ connection: { status: "checking" } });
     let me;
     try {
       me = await api("/users/me/");
     } catch (error) {
       if (!current()) return;
-      return set({ connection: failure(error), me: undefined });
+      return set({ connection: failure(error) });
     }
     if (!current()) return;
     const name = nameOf(me);
-    if (!workspace) return set({ connection: { status: "no-workspace", name }, me });
+    if (!workspace) return set({ connection: { status: "no-workspace", name } });
     try {
       await api(`${ws(workspace)}/projects/?per_page=1`);
     } catch (error) {
       if (!current()) return;
       const unknown = error.kind === "refused" || error.kind === "not-found";
-      return set({ connection: unknown ? { status: "unknown-workspace", name, workspace } : failure(error), me });
+      return set({ connection: unknown ? { status: "unknown-workspace", name, workspace } : failure(error) });
     }
-    if (current()) set({ connection: { status: "connected", name }, me });
+    if (current()) set({ connection: { status: "connected", name } });
   }
 
   function failure(error) {
@@ -234,81 +228,10 @@ export function apply(ctx) {
     return { status: "error", message: error.message };
   }
 
-  async function loadMine(fresh) {
-    if (state.connection.status !== "connected" || !state.me) return setMine([]);
-    const slug = state.workspace;
-    const me = state.me.id;
-    const run = generation;
-    try {
-      const projects = await projectsOf(slug, fresh);
-      // A project you can see but aren't in answers 403; skip it, not the list.
-      const found = await Promise.allSettled(
-        projects.map(async (project) =>
-          (await issuesOf(slug, project.id, fresh))
-            .filter((issue) => OPEN.has(issue.state?.group) && (issue.assignees ?? []).some((a) => idOf(a) === me))
-            .map((issue) => ({ issue, project })),
-        ),
-      );
-      if (run !== generation || slug !== state.workspace) return;
-      // Furthest along first, then the most recently changed.
-      const rank = ({ issue }) => GROUPS.indexOf(issue.state?.group);
-      setMine(
-        found
-          .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
-          .sort((a, b) => rank(b) - rank(a) || String(b.issue.updated_at).localeCompare(String(a.issue.updated_at))),
-      );
-      set({ mineError: "" });
-    } catch (error) {
-      if (run === generation) set({ mineError: error.message });
-    }
-  }
-
   async function refresh(fresh = false) {
     if (fresh) forget();
     await check();
-    await loadMine(fresh);
   }
-
-  // ---- Sidebar: My cards -----------------------------------------------------
-
-  let rows = [];
-  const rowProject = new Map();
-  function setMine(mine) {
-    rowProject.clear();
-    for (const { issue, project } of mine) rowProject.set(issue.id, project.id);
-    rows = mine.map(({ issue }) => ({
-      id: issue.id,
-      label: issue.name,
-      icon: stateIcon(issue.state),
-      status: issue.state?.name ?? "",
-    }));
-    set({ mine });
-  }
-  const setupRow = [{ id: "setup", label: "Connect Plane in Settings", icon: icon("key") }];
-  const UNSET = new Set(["missing", "refused", "no-workspace", "unknown-workspace"]);
-  const sidebarRows = () => (UNSET.has(state.connection.status) ? setupRow : rows);
-
-  const sections = ctx.reflect?.get("sidebarSections");
-  sections?.register({
-    version: 1,
-    id: "my-cards",
-    title: "My cards",
-    icon: icon("layout-kanban"),
-    rows: { snapshot: sidebarRows, subscribe },
-    select: (row) =>
-      row.id === "setup"
-        ? SETTINGS
-        : { version: 1, kind: "plugin", pluginId, pageId: "board", params: { project: rowProject.get(row.id) ?? "" } },
-    actions: [
-      { id: "refresh", label: "Refresh", icon: icon("refresh"), onSelect: () => void refresh(true) },
-      {
-        id: "board",
-        label: "Open board",
-        icon: icon("layout-kanban"),
-        onSelect: () => void ctx.navigation.open({ version: 1, kind: "plugin", pluginId, pageId: "board" }),
-      },
-    ],
-  });
 
   ctx.effect(() => {
     let live = true;
@@ -318,10 +241,8 @@ export function apply(ctx) {
       set({ key: apiKey ? "saved" : "missing" });
       await refresh();
     })();
-    const timer = setInterval(() => void refresh(), REFRESH_MS);
     return () => {
       live = false;
-      clearInterval(timer);
     };
   });
 
@@ -598,7 +519,6 @@ export function apply(ctx) {
         h(IconButton, { label: "Refresh", disabled: !connected, onClick: () => {
           forget();
           setTick((n) => n + 1);
-          void loadMine(true);
         } }, icon("refresh")),
         s.workspace &&
           external(
@@ -740,6 +660,7 @@ export function apply(ctx) {
     title: "Plane",
     layout: "workspace",
     primary: true,
+    placement: "dock",
     icon: `data:image/svg+xml,${encodeURIComponent(
       `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS["layout-kanban"]
         .map((d) => `<path d="${d}"/>`)
@@ -837,10 +758,7 @@ export function apply(ctx) {
       await api(`${ws(link.slug)}/projects/${projectId}/issues/${issue.id}/`, { method: "PATCH", body: { state: stateId } });
       lists.delete(`${ws(link.slug)}/projects/${projectId}/issues/?${EXPAND}`);
       await loadCard(link);
-      if (link.slug === state.workspace) {
-        set({ moved: state.moved + 1 });
-        void loadMine();
-      }
+      if (link.slug === state.workspace) set({ moved: state.moved + 1 });
     } catch (error) {
       setCard(link.key, { error: error.message });
     } finally {

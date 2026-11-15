@@ -1,10 +1,10 @@
 # Plane
 
 Follow and move your cards from a self-hosted [Plane](https://plane.so)
-workspace without leaving Buzz. You get a board page, your open cards in the
-sidebar, and Plane card links in channels with a **Move** menu and a side
-panel. Click a card on the board to see its details and move it there. It
-uses your own API key, so it sees and moves only what you can in Plane.
+workspace without leaving Buzz. You get a board page in the left dock, and
+Plane card links in channels with a **Move** menu and a side panel. Click a
+card on the board to see its details and move it there. It uses your own API
+key, so it sees and moves only what you can in Plane.
 
 ## Getting started
 
@@ -53,8 +53,7 @@ read that item with `security`, the same as any other item you create there.
 ## Limits
 
 - Plane allows an API key 60 calls a minute, so lists are reused for a
-  minute. My cards refreshes itself every five minutes; the board refreshes
-  when you choose **Refresh** or move a card.
+  minute. The board refreshes when you choose **Refresh** or move a card.
 - Cancelled cards are left off the board.
 - macOS only, because of the Keychain.
 
