@@ -3,7 +3,8 @@
 Follow and move your cards from a self-hosted [Plane](https://plane.so)
 workspace without leaving Buzz. You get a board page in the left dock, and
 Plane card links in channels with a **Move** menu and a side panel. Click a
-card on the board to see its details and move it there. It uses your own API
+card on the board to see its details and move it there. Turn on **Assigned
+to me** to see only your cards in the project you picked. It uses your own API
 key, so it sees and moves only what you can in Plane.
 
 ## Getting started
@@ -61,3 +62,9 @@ read that item with `security`, the same as any other item you create there.
 
 - `plugin.js`: the plugin. Plain JavaScript, no build step.
 - `manifest.json`: the plugin manifest, with a placeholder origin.
+
+## Mockups
+
+Design sheets, in [`mockups/`](mockups/).
+
+![The Assigned to me switch: off, on, and on with no cards](mockups/assigned-to-me.png)

@@ -12,6 +12,7 @@ export const inject = ["conversation", "host", "navigation", "pages", "panels", 
 const SERVER = "https://plane.example.com";
 const WORKSPACE_KEY = "buzz-plane.workspace";
 const PROJECT_KEY = "buzz-plane.project";
+const MINE_KEY = "buzz-plane.assigned-to-me";
 // Plane's state groups, in board order. Cancelled is left off the board.
 const GROUPS = ["backlog", "unstarted", "started", "completed", "cancelled"];
 const EXPAND = "expand=assignees,labels,state,estimate_point";
@@ -44,6 +45,7 @@ export function apply(ctx) {
     key: "checking", // checking | missing | saved
     connection: { status: "checking" },
     workspace: stored(WORKSPACE_KEY),
+    me: undefined, // the Plane user the key belongs to
     moved: 0, // counts moves, so the board reloads its list
   };
   const listeners = new Set();
@@ -101,7 +103,7 @@ export function apply(ctx) {
     generation++;
     cards.clear();
     forget();
-    set({ key: "missing", connection: { status: "missing" } });
+    set({ key: "missing", connection: { status: "missing" }, me: undefined });
   }
 
   function saveWorkspace(value) {
@@ -200,26 +202,26 @@ export function apply(ctx) {
     const run = ++generation;
     const current = () => run === generation;
     const workspace = state.workspace;
-    if (!apiKey) return set({ connection: { status: "missing" } });
+    if (!apiKey) return set({ connection: { status: "missing" }, me: undefined });
     set({ connection: { status: "checking" } });
     let me;
     try {
       me = await api("/users/me/");
     } catch (error) {
       if (!current()) return;
-      return set({ connection: failure(error) });
+      return set({ connection: failure(error), me: undefined });
     }
     if (!current()) return;
     const name = nameOf(me);
-    if (!workspace) return set({ connection: { status: "no-workspace", name } });
+    if (!workspace) return set({ connection: { status: "no-workspace", name }, me });
     try {
       await api(`${ws(workspace)}/projects/?per_page=1`);
     } catch (error) {
       if (!current()) return;
       const unknown = error.kind === "refused" || error.kind === "not-found";
-      return set({ connection: unknown ? { status: "unknown-workspace", name, workspace } : failure(error) });
+      return set({ connection: unknown ? { status: "unknown-workspace", name, workspace } : failure(error), me });
     }
-    if (current()) set({ connection: { status: "connected", name } });
+    if (current()) set({ connection: { status: "connected", name }, me });
   }
 
   function failure(error) {
@@ -459,6 +461,7 @@ export function apply(ctx) {
     const [error, setError] = useState("");
     const [tick, setTick] = useState(0);
     const [opened, setOpened] = useState(""); // the card shown in the details pane
+    const [mine, setMine] = useState(stored(MINE_KEY) === "1"); // only cards assigned to me
     const connected = s.connection.status === "connected";
 
     useEffect(() => {
@@ -503,7 +506,10 @@ export function apply(ctx) {
     const current = projects?.find((p) => p.id === project);
     const shown = board?.project === project ? board : undefined;
     const columns = shown ? shown.states.filter((st) => st.group !== "cancelled") : [];
-    const count = shown ? shown.issues.filter((i) => columns.some((c) => c.id === idOf(i.state))).length : 0;
+    const issues = shown
+      ? shown.issues.filter((i) => !mine || (i.assignees ?? []).some((a) => idOf(a) === s.me?.id))
+      : [];
+    const count = issues.filter((i) => columns.some((c) => c.id === idOf(i.state))).length;
 
     const header = h(
       "div",
@@ -515,7 +521,29 @@ export function apply(ctx) {
       ),
       h(
         "div",
-        { className: "buzz-content-header-actions" },
+        { className: "buzz-content-header-actions pl-actions" },
+        h(
+          "label",
+          { "data-buzz-ui": "", className: "buzz-switch pl-switch text-body-sm" },
+          h(
+            "button",
+            {
+              type: "button",
+              role: "switch",
+              className: "buzz-switch-control",
+              "aria-checked": mine,
+              "data-checked": mine ? "" : undefined,
+              disabled: !connected,
+              "data-disabled": connected ? undefined : "",
+              onClick: () => {
+                store(MINE_KEY, mine ? "" : "1");
+                setMine(!mine);
+              },
+            },
+            h("span", { className: "buzz-switch-thumb" }),
+          ),
+          "Assigned to me",
+        ),
         h(IconButton, { label: "Refresh", disabled: !connected, onClick: () => {
           forget();
           setTick((n) => n + 1);
@@ -572,7 +600,7 @@ export function apply(ctx) {
                 "div",
                 { className: "pl-columns" },
                 columns.map((column) => {
-                  const cards = shown.issues.filter((i) => idOf(i.state) === column.id);
+                  const cards = issues.filter((i) => idOf(i.state) === column.id);
                   return h(
                     "section",
                     { key: column.id, className: "pl-column", "aria-label": column.name },
@@ -1409,6 +1437,8 @@ const ICONS = {
 const CSS = `
 .pl-page { display: flex; flex-direction: column; gap: var(--space-3); height: 100%; min-height: 0; padding: var(--space-panel-inset); box-sizing: border-box; }
 .pl-title { display: flex; align-items: center; gap: var(--space-2); }
+.pl-actions { align-items: center; }
+.pl-switch { margin-inline-end: var(--space-2); }
 .pl-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .pl-picker { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-3); border: 1px solid var(--border-standard); border-radius: var(--radius-pill); font-size: var(--text-body-sm); }
 .pl-picker select { appearance: none; background: transparent; border: 0; color: var(--text); font: inherit; padding-inline-end: var(--space-1); cursor: pointer; }
