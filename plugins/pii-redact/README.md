@@ -73,6 +73,36 @@ load. A draft that takes longer than 10 seconds kills it, and the next draft
 starts a fresh one. Drafts over 20,000 characters are checked for names and
 places up to there; the patterns cover all of it.
 
+## Placeholders
+
+`redact(text, spans, map)` swaps each span for a placeholder such as
+`[EMAIL·a3f9]`: the type, then four random hex digits. The placeholder is what
+gets sent, so everyone else sees only that. Each value keeps one placeholder,
+which is what lets the sender's Mac show it again (`unredact`). The other
+side of that: two messages that carry the same placeholder carry the same
+value. The digits are random, not a hash, so a placeholder can't be guessed
+back from a phone number or a name.
+
+Keys and tokens are the exception. Each one gets a fresh placeholder and its
+value is never stored, so a secret stays redacted even on your Mac.
+
+## The placeholder map
+
+The placeholder→value map holds the real emails, phones, IPs, names and
+places you redacted, so it stays on this Mac:
+
+- **Where:** Buzz's web storage (`localStorage`) on this Mac, key
+  `pii-redact/placeholders/v1`, as plain JSON. The plugin never publishes it,
+  and Buzz doesn't sync web storage to the relay or to your other devices.
+  Keeping the newest 5,000 entries caps its size.
+- **What can read it:** any plugin you install (plugins run as trusted code in
+  Buzz's JavaScript context and share its storage), and any program running
+  as you that can read Buzz's app data folder, the same as the rest of Buzz's
+  local data. It isn't encrypted. FileVault protects it at rest only while the
+  Mac is off.
+- **Forgetting:** `forget()` clears it. After that, your own sent messages show
+  their placeholders like everyone else's.
+
 ## Composer hook
 
 On buzz-app `main`, a plugin can read the draft and mark ranges in it with

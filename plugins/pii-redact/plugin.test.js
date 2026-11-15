@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { NO_VENV, createEngine, findPatterns, nerSpans, resolveOverlaps } from "./plugin.js";
+import { NO_VENV, PLACEHOLDER, createEngine, createPlaceholderMap, findPatterns, nerSpans, redact, resolveOverlaps, unredact } from "./plugin.js";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/draft.json", import.meta.url), "utf8"));
 
@@ -82,4 +82,66 @@ test("on overlap the earlier, then longer, span wins", () => {
     { type: "place", start: 8, end: 12, text: "" },
   ]);
   assert.deepEqual(spans.map((s) => s.type), ["email"]);
+});
+
+function memoryStorage() {
+  const items = new Map();
+  return {
+    items,
+    getItem: (k) => items.get(k) ?? null,
+    setItem: (k, v) => items.set(k, String(v)),
+    removeItem: (k) => items.delete(k),
+  };
+}
+
+test("redacting the fixture and putting it back", () => {
+  const map = createPlaceholderMap(memoryStorage());
+  const { text, replacements } = redact(fixture.text, fixture.spans, map);
+  assert.deepEqual(replacements.map((r) => [r.start, r.end]), fixture.spans.map((s) => [s.start, s.end]));
+  assert.deepEqual([...text.matchAll(PLACEHOLDER)].map((m) => m[1]), ["NAME", "EMAIL", "PHONE", "IP", "KEY", "PLACE"]);
+  for (const span of fixture.spans) assert.ok(!text.includes(span.text));
+  const key = fixture.spans.find((s) => s.type === "key");
+  assert.equal(unredact(text, map), fixture.text.replace(key.text, replacements.find((r) => r.type === "key").placeholder));
+});
+
+test("replacements applied last to first give the redacted text", () => {
+  const map = createPlaceholderMap(memoryStorage());
+  const { text, replacements } = redact(fixture.text, fixture.spans, map);
+  let draft = fixture.text;
+  for (const r of [...replacements].reverse()) draft = draft.slice(0, r.start) + r.placeholder + draft.slice(r.end);
+  assert.equal(draft, text);
+});
+
+test("one value keeps one placeholder; keys get a new one and no stored value", () => {
+  const storage = memoryStorage();
+  const map = createPlaceholderMap(storage);
+  const email = map.placeholder("email", "someone@example.com");
+  assert.equal(map.placeholder("email", "someone@example.com"), email);
+  assert.notEqual(map.placeholder("email", "other@example.com"), email);
+  const secret = fixture.spans.find((s) => s.type === "key").text;
+  const key = map.placeholder("key", secret);
+  assert.notEqual(map.placeholder("key", secret), key);
+  assert.equal(map.value(key), undefined);
+  assert.ok(![...storage.items.values()].join().includes(secret));
+});
+
+test("the map survives a reload and forget clears it", () => {
+  const storage = memoryStorage();
+  const placeholder = createPlaceholderMap(storage).placeholder("name", "Maria Garcia");
+  const reloaded = createPlaceholderMap(storage);
+  assert.equal(reloaded.value(placeholder), "Maria Garcia");
+  reloaded.forget();
+  assert.equal(createPlaceholderMap(storage).value(placeholder), undefined);
+});
+
+test("unknown placeholders and existing ones are left alone", () => {
+  const map = createPlaceholderMap(memoryStorage());
+  assert.equal(unredact("hi [EMAIL·0000]", map), "hi [EMAIL·0000]");
+  const text = "see [NAME·ab12] now";
+  assert.equal(redact(text, [{ type: "name", start: 5, end: 9, text: "NAME" }], map).text, text);
+});
+
+test("without storage the map still works", () => {
+  const map = createPlaceholderMap(null);
+  assert.equal(map.value(map.placeholder("ip", "192.0.2.1")), "192.0.2.1");
 });

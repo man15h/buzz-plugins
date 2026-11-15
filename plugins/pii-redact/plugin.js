@@ -211,5 +211,94 @@ export function createEngine(spawn) {
   };
 }
 
+// Redaction swaps each span for a placeholder such as `[EMAIL·a3f9]`: the
+// type and four random hex digits, unique in this Mac's map, so the sender's
+// own Mac can show the value again. Random, not a hash, so a placeholder says
+// nothing about the value it stands for. Keys get a placeholder but their
+// value is never stored: a secret stays redacted even here.
+const MAP_KEY = "pii-redact/placeholders/v1";
+// Oldest entries go first past this.
+const MAP_LIMIT = 5_000;
+export const PLACEHOLDER = /\[(EMAIL|PHONE|KEY|IP|NAME|PLACE)·([0-9a-f]{4})\]/g;
+
+function randomTag() {
+  const bytes = crypto.getRandomValues(new Uint8Array(2));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// The placeholder→value map. It lives in this Mac's Buzz web storage under
+// MAP_KEY and is never published or synced (README.md, "The placeholder
+// map"). `storage` is `localStorage`; without it the map lasts until Buzz
+// quits.
+export function createPlaceholderMap(storage = globalThis.localStorage) {
+  let entries = new Map();
+  try {
+    const saved = JSON.parse(storage?.getItem(MAP_KEY) ?? "[]");
+    if (Array.isArray(saved)) entries = new Map(saved.filter((e) => Array.isArray(e) && e.length === 3).map(([p, type, value]) => [p, { type, value }]));
+  } catch {
+    // An unreadable map starts empty.
+  }
+
+  function save() {
+    try {
+      storage?.setItem(MAP_KEY, JSON.stringify([...entries].map(([p, { type, value }]) => [p, type, value])));
+    } catch {
+      // Full or unavailable storage: the map lasts until Buzz quits.
+    }
+  }
+
+  return {
+    placeholder(type, value) {
+      const label = type.toUpperCase();
+      if (type !== "key") {
+        for (const [p, entry] of entries) if (entry.type === type && entry.value === value) return p;
+      }
+      let p;
+      do p = `[${label}·${randomTag()}]`;
+      while (entries.has(p));
+      entries.set(p, { type, value: type === "key" ? null : value });
+      while (entries.size > MAP_LIMIT) entries.delete(entries.keys().next().value);
+      save();
+      return p;
+    },
+    // The stored value, or undefined for a key or a placeholder from elsewhere.
+    value(placeholder) {
+      return entries.get(placeholder)?.value ?? undefined;
+    },
+    forget() {
+      entries = new Map();
+      try {
+        storage?.removeItem(MAP_KEY);
+      } catch {
+        // Nothing stored.
+      }
+    },
+  };
+}
+
+// The redacted draft, and each replacement as a range of the original draft
+// (for `replaceRange`, applied last to first), in draft order. Spans inside an
+// existing placeholder are skipped.
+export function redact(text, spans, map) {
+  const taken = [...text.matchAll(PLACEHOLDER)].map((m) => [m.index, m.index + m[0].length]);
+  const kept = resolveOverlaps(spans).filter(({ start, end }) => !taken.some(([s, e]) => start < e && end > s));
+  let out = "";
+  let at = 0;
+  const replacements = [];
+  for (const span of kept) {
+    const placeholder = map.placeholder(span.type, span.text);
+    out += text.slice(at, span.start);
+    replacements.push({ type: span.type, start: span.start, end: span.end, placeholder });
+    out += placeholder;
+    at = span.end;
+  }
+  return { text: out + text.slice(at), replacements };
+}
+
+// The text with every placeholder this Mac knows put back; the rest stay.
+export function unredact(text, map) {
+  return text.replace(PLACEHOLDER, (placeholder) => map.value(placeholder) ?? placeholder);
+}
+
 // Nothing to register until the composer UI lands.
 export function apply() {}
