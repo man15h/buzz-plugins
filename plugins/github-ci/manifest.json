@@ -1,0 +1,28 @@
+{
+  "id": "github-ci",
+  "name": "GitHub CI",
+  "apiVersion": 1,
+  "description": "Open pull requests and post-merge runs for the GitHub repo linked to a channel.",
+  "discovery": {
+    "category": "developer-tools-and-integrations",
+    "tags": ["code", "ci"]
+  },
+  "host": {
+    "commands": [
+      {
+        "id": "graphql",
+        "program": "gh",
+        "args": ["api", "graphql", "--hostname", "github.com", "--input", "-"],
+        "maxInputBytes": 8192,
+        "maxOutputBytes": 1048576
+      },
+      {
+        "id": "whoami",
+        "program": "gh",
+        "args": ["api", "--hostname", "github.com", "user", "--jq", ".login"],
+        "maxOutputBytes": 256
+      }
+    ],
+    "networkOrigins": ["https://api.github.com"]
+  }
+}
