@@ -211,18 +211,18 @@ export function createEngine(spawn) {
   };
 }
 
-// Redaction swaps each span for a placeholder such as `[EMAIL·a3f9]`: the
-// type and four random hex digits, unique in this Mac's map, so the sender's
+// Redaction swaps each span for a placeholder such as `[EMAIL·a3f9c20e]`:
+// the type and eight random hex digits, unique in this Mac's map, so the sender's
 // own Mac can show the value again. Random, not a hash, so a placeholder says
 // nothing about the value it stands for. Keys get a placeholder but their
 // value is never stored: a secret stays redacted even here.
 const MAP_KEY = "pii-redact/placeholders/v1";
 // Oldest entries go first past this.
 const MAP_LIMIT = 5_000;
-export const PLACEHOLDER = /\[(EMAIL|PHONE|KEY|IP|NAME|PLACE)·([0-9a-f]{4})\]/g;
+export const PLACEHOLDER = /\[(EMAIL|PHONE|KEY|IP|NAME|PLACE)·([0-9a-f]{8})\]/g;
 
 function randomTag() {
-  const bytes = crypto.getRandomValues(new Uint8Array(2));
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
@@ -296,6 +296,10 @@ export function redact(text, spans, map) {
 }
 
 // The text with every placeholder this Mac knows put back; the rest stay.
+// Only for messages signed by this Mac's own pubkey: someone else's message
+// can carry a placeholder that happens to match an entry here, and must never
+// get the owner's real value. Eight hex digits make that unlikely (5,000
+// entries in 2^32), but the pubkey check is what rules it out.
 export function unredact(text, map) {
   return text.replace(PLACEHOLDER, (placeholder) => map.value(placeholder) ?? placeholder);
 }

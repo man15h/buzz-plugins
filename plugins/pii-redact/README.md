@@ -76,12 +76,18 @@ places up to there; the patterns cover all of it.
 ## Placeholders
 
 `redact(text, spans, map)` swaps each span for a placeholder such as
-`[EMAIL·a3f9]`: the type, then four random hex digits. The placeholder is what
+`[EMAIL·a3f9c20e]`: the type, then eight random hex digits. The placeholder is what
 gets sent, so everyone else sees only that. Each value keeps one placeholder,
 which is what lets the sender's Mac show it again (`unredact`). The other
 side of that: two messages that carry the same placeholder carry the same
 value. The digits are random, not a hash, so a placeholder can't be guessed
 back from a phone number or a name.
+
+`unredact` is only for messages signed by this Mac's own pubkey. Another
+person's message can carry a placeholder that matches an entry in your map by
+chance, and it must not show your real value. Eight hex digits make that
+unlikely (5,000 entries in about four billion tags); the message renderer,
+when it lands, must check the author's pubkey to rule it out.
 
 Keys and tokens are the exception. Each one gets a fresh placeholder and its
 value is never stored, so a secret stays redacted even on your Mac.

@@ -136,8 +136,8 @@ test("the map survives a reload and forget clears it", () => {
 
 test("unknown placeholders and existing ones are left alone", () => {
   const map = createPlaceholderMap(memoryStorage());
-  assert.equal(unredact("hi [EMAIL·0000]", map), "hi [EMAIL·0000]");
-  const text = "see [NAME·ab12] now";
+  assert.equal(unredact("hi [EMAIL·00000000]", map), "hi [EMAIL·00000000]");
+  const text = "see [NAME·ab12cd34] now";
   assert.equal(redact(text, [{ type: "name", start: 5, end: 9, text: "NAME" }], map).text, text);
 });
 
