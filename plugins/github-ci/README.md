@@ -88,7 +88,9 @@ The link is a kind 30078 event in the channel:
 ```
 
 Readers take the newest such event whose author is an owner or admin in the
-channel's current roster (kind 39001), and ignore the rest. **Unlink**
+channel's current roster (kind 39001, signed by the relay's own key), and
+ignore the rest. Without the relay's key the tab shows an error instead of a
+link. **Unlink**
 publishes the same event with empty content. The event holds only the repo
 and branch.
 

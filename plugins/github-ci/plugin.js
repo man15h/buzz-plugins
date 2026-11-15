@@ -16,6 +16,8 @@ const MAX_PRS = 20;
 const MAX_MERGES = 5;
 const REFRESH_MS = 120_000;
 const REPO = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+// "." and ".." would turn /repos/owner/../pulls into another API path.
+const validRepo = (repo) => typeof repo === "string" && REPO.test(repo) && ![".", ".."].includes(repo.split("/")[1]);
 const linkTag = (channelId) => `buzz-plugins.github-ci.link:${channelId}`;
 
 // Worst first: a PR's state is its worst check's.
@@ -253,24 +255,30 @@ export function apply(ctx) {
 
   // --- GitHub with gh: GraphQL through a declared host command.
 
-  const GH_QUERY = `query($owner: String!, $name: String!, $branch: String!, $prs: Int!, $merges: Int!) {
+  // Node caps keep the output well under maxOutputBytes: at most 20 PRs × 30
+  // contexts here, and 5 merges × 10 suites × 25 runs in MERGE_RUNS_QUERY.
+  const GH_QUERY = `query($owner: String!, $name: String!, $branch: String!, $prs: Int!) {
   viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: $prs, orderBy: { field: UPDATED_AT, direction: DESC }) {
       nodes { number title url author { login }
-        commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 50) { nodes {
+        commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 30) { nodes {
           __typename
           ... on CheckRun { name status conclusion detailsUrl checkSuite { workflowRun { url workflow { name } } } }
           ... on StatusContext { context state targetUrl }
         } } } } } } }
     }
-    merged: pullRequests(states: MERGED, baseRefName: $branch, first: $merges, orderBy: { field: UPDATED_AT, direction: DESC }) {
-      nodes { number title url mergedAt mergedBy { login }
-        mergeCommit { checkSuites(first: 20) { nodes { status conclusion app { name }
-          workflowRun { url event workflow { name } }
-          checkRuns(first: 30) { nodes { name status conclusion detailsUrl } } } } } }
+    # GraphQL can't order by merge time: read 30 by update, as REST does,
+    # sort by mergedAt, then read runs for the newest few.
+    merged: pullRequests(states: MERGED, baseRefName: $branch, first: 30, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      nodes { number title url mergedAt mergedBy { login } mergeCommit { id } }
     }
   }
+}`;
+  const MERGE_RUNS_QUERY = `query($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on Commit { id checkSuites(first: 10) { nodes { status conclusion app { name }
+    workflowRun { url workflow { name } }
+    checkRuns(first: 25) { nodes { name status conclusion detailsUrl } } } } } }
 }`;
   const LOOKUP_QUERY = `query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) { nameWithOwner defaultBranchRef { name } }
@@ -290,10 +298,17 @@ export function apply(ctx) {
     const out = await ctx.host.runCommand("whoami");
     return typeof out === "string" && out.trim() ? out.trim() : undefined;
   }
-  // Tell "gh can't read" apart: not signed in (or no gh), offline, or no access.
-  async function ghFailure() {
+  // gh failures all come back as null. Tell them apart: not signed in (or no
+  // gh), offline, no access, or a read that failed for another reason, such as
+  // the 5 s deadline, while the repo itself is visible.
+  async function ghFailure(repo) {
     const login = await ghLogin();
-    if (login) return new ReadError("noAccess", login);
+    if (login) {
+      if (!repo) return new ReadError("noAccess", login);
+      const [owner, name] = repo.split("/");
+      const data = await gh(LOOKUP_QUERY, { owner, name });
+      return data?.repository ? new ReadError("unreachable") : new ReadError("noAccess", login);
+    }
     try {
       await ctx.host.request({ url: `${API}/zen`, method: "GET", timeoutMs: 5000 });
       return new ReadError("noGh");
@@ -311,9 +326,9 @@ export function apply(ctx) {
 
   async function readWithGh(link, signal) {
     const [owner, name] = link.repo.split("/");
-    const data = await gh(GH_QUERY, { owner, name, branch: link.branch, prs: MAX_PRS, merges: MAX_MERGES });
+    const data = await gh(GH_QUERY, { owner, name, branch: link.branch, prs: MAX_PRS });
     signal?.throwIfAborted();
-    if (!data) throw await ghFailure();
+    if (!data) throw await ghFailure(link.repo);
     if (!data.repository) throw new ReadError("noAccess", data.viewer?.login);
     const prs = data.repository.pullRequests.nodes.map((pr) => {
       const contexts = pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [];
@@ -345,16 +360,22 @@ export function apply(ctx) {
       for (const check of runs.values()) check.state = worst(check.jobs.map((job) => job.state));
       return pullRequest(pr.number, pr.title, pr.url, pr.author?.login, checks);
     });
-    const merges = data.repository.merged.nodes
+    const merged = data.repository.merged.nodes
       .filter((pr) => pr.mergedAt)
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))
-      .map((pr) => ({
+      .slice(0, MAX_MERGES);
+    const ids = merged.map((pr) => pr.mergeCommit?.id).filter(Boolean);
+    const runData = ids.length ? await gh(MERGE_RUNS_QUERY, { ids }) : { nodes: [] };
+    signal?.throwIfAborted();
+    if (!runData) throw new ReadError("unreachable");
+    const commits = new Map(runData.nodes.filter(Boolean).map((commit) => [commit.id, commit]));
+    const merges = merged.map((pr) => ({
         number: pr.number,
         title: pr.title,
         url: pr.url,
         mergedAt: Date.parse(pr.mergedAt),
         mergedBy: pr.mergedBy?.login,
-        runs: (pr.mergeCommit?.checkSuites.nodes ?? [])
+        runs: (commits.get(pr.mergeCommit?.id)?.checkSuites.nodes ?? [])
           .filter((suite) => suite.checkRuns.nodes.length)
           .map((suite) => ({
             name: suite.workflowRun?.workflow.name ?? suite.app?.name ?? "Checks",
@@ -416,19 +437,33 @@ export function apply(ctx) {
   const eventsOf = (result) => (Array.isArray(result) ? result : result?.events ?? []);
   const tagValue = (event, name) => event.tags.find((tag) => tag[0] === name)?.[1];
 
+  // The roster is trusted only from the relay's own key, as the app reads it
+  // (lifecycleRecord); without that key, fail closed.
   async function readLink(session, channelId, signal) {
+    const relayAuthor = session.relayAuthor;
+    if (typeof relayAuthor !== "string" || !relayAuthor) throw new Error("No relay key.");
     const d = linkTag(channelId);
-    const [links, roster] = await Promise.all([
-      session.read([{ kinds: [LINK_KIND], "#d": [d], "#h": [channelId], limit: 20 }], { signal, fresh: true }),
-      session.read([{ kinds: [39001], "#d": [channelId], limit: 1 }], { signal, fresh: true }),
-    ]);
-    const admins = new Set(
-      (eventsOf(roster)[0]?.tags ?? [])
-        .filter((tag) => tag[0] === "p" && (tag[2] === "owner" || tag[2] === "admin"))
-        .map((tag) => tag[1]),
+    const roster = eventsOf(
+      await session.read([{ kinds: [39001], authors: [relayAuthor], "#d": [channelId], limit: 1 }], { signal, fresh: true }),
+    )[0];
+    if (!roster || roster.pubkey !== relayAuthor || roster.kind !== 39001 || tagValue(roster, "d") !== channelId)
+      throw new Error("Unverified roster.");
+    const admins = [
+      ...new Set(
+        roster.tags
+          .filter((tag) => tag[0] === "p" && (tag[2] === "owner" || tag[2] === "admin"))
+          .map((tag) => tag[1]),
+      ),
+    ];
+    if (!admins.length) return undefined;
+    // Only owners' and admins' events, so members' events can't push the link
+    // out of the window.
+    const links = await session.read(
+      [{ kinds: [LINK_KIND], authors: admins, "#d": [d], "#h": [channelId], limit: 20 }],
+      { signal, fresh: true },
     );
     const newest = eventsOf(links)
-      .filter((event) => event.kind === LINK_KIND && tagValue(event, "d") === d && admins.has(event.pubkey))
+      .filter((event) => event.kind === LINK_KIND && tagValue(event, "d") === d && admins.includes(event.pubkey))
       .sort((a, b) => b.created_at - a.created_at)[0];
     return parseLink(newest?.content);
   }
@@ -436,15 +471,15 @@ export function apply(ctx) {
     if (!content) return undefined;
     try {
       const { repo, branch } = JSON.parse(content);
-      return typeof repo === "string" && REPO.test(repo) && validBranch(branch) ? { repo, branch } : undefined;
+      return validRepo(repo) && validBranch(branch) ? { repo, branch } : undefined;
     } catch {
       return undefined;
     }
   }
   const validBranch = (branch) => typeof branch === "string" && /^[^\s~^:?*[\\]{1,255}$/.test(branch);
   // An empty content unlinks; readers treat it as no link.
-  function writeLink(session, channelId, link) {
-    session.outbox.send({
+  async function writeLink(session, channelId, link) {
+    await session.outbox.send({
       kind: LINK_KIND,
       content: link ? JSON.stringify({ repo: link.repo, branch: link.branch }) : "",
       tags: [
@@ -513,8 +548,18 @@ export function apply(ctx) {
   const stateIcon = (state) =>
     icon(STATE_ICON[state], 16, { className: `gci-state`, "data-state": state, role: "img", "aria-label": STATE_LABEL[state] ?? "no checks" });
 
-  // A GitHub link opens in Buzz's own GitHub panel when the host can open it.
+  // Status and check URLs are set by whoever posts them: link only https.
+  function safeUrl(url) {
+    try {
+      return new URL(url).protocol === "https:" ? url : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  // A GitHub link opens in Buzz's own GitHub panel when the host can open it;
+  // any other URL renders as plain text.
   function GitHubLink({ url, host, className, children }) {
+    if (!safeUrl(url)) return h("span", { className }, children);
     return h(
       "a",
       {
@@ -718,7 +763,7 @@ export function apply(ctx) {
     const lookup = (event) => {
       event.preventDefault();
       const name = repo.trim().replace(/^https:\/\/github\.com\//, "").replace(/\/+$/, "");
-      if (!REPO.test(name)) return setStatus({ error: "Enter a repo as owner/name." });
+      if (!validRepo(name)) return setStatus({ error: "Enter a repo as owner/name." });
       setStatus({ busy: true });
       lookupRepo(name).then(
         (next) => {
@@ -735,7 +780,8 @@ export function apply(ctx) {
     const save = (event) => {
       event.preventDefault();
       if (!validBranch(branch.trim())) return setStatus({ error: "Enter a branch name." });
-      onSave({ repo: found.repo, branch: branch.trim() });
+      setStatus({ busy: true });
+      onSave({ repo: found.repo, branch: branch.trim() }).catch(() => setStatus({ error: "Couldn’t save the link. Try again." }));
     };
     return h(
       "dialog",
@@ -768,12 +814,15 @@ export function apply(ctx) {
             "Branch for post-merge runs",
             h("input", { value: branch, spellCheck: false, onChange: (event) => setBranch(event.target.value) }),
           ),
-        status.busy && h("p", { className: "gci-meta", role: "status" }, "Looking it up…"),
+        status.busy && h("p", { className: "gci-meta", role: "status" }, found ? "Saving…" : "Looking it up…"),
         status.error && h("p", { className: "gci-error", role: "alert" }, status.error),
         h(
           "div",
           { className: "gci-actions" },
-          current && h("button", { type: "button", className: "gci-button gci-danger", onClick: onUnlink }, "Unlink"),
+          current && h("button", { type: "button", className: "gci-button gci-danger", onClick: () => {
+                setStatus({ busy: true });
+                onUnlink().catch(() => setStatus({ error: "Couldn’t remove the link. Try again." }));
+              } }, "Unlink"),
           h("button", { type: "button", className: "gci-button", onClick: () => ref.current?.close() }, "Cancel"),
           h("button", { type: "submit", className: "gci-button gci-primary", disabled: status.busy }, found ? "Link repository" : "Look up"),
         ),
@@ -784,25 +833,32 @@ export function apply(ctx) {
   function ChannelCi({ session, channel, host }) {
     const [link, setLink] = React.useState({ status: "loading" });
     const [editing, setEditing] = React.useState(false);
+    const [generation, setGeneration] = React.useState(0);
+    // Read again with the CI, so another admin's relink shows without a remount.
+    // A failed re-read keeps the link already shown.
     React.useEffect(() => {
       const controller = new AbortController();
-      setLink({ status: "loading" });
       readLink(session, channel.id, controller.signal).then(
         (value) => {
           if (controller.signal.aborted) return;
           setLink({ status: "ready", value });
           if (!value) remember(channel);
         },
-        () => !controller.signal.aborted && setLink({ status: "error" }),
+        () => !controller.signal.aborted && setLink((previous) => (previous.status === "ready" ? previous : { status: "error" })),
       );
-      return () => controller.abort();
-    }, [session, channel.id]);
+      const timer = setTimeout(() => setGeneration((value) => value + 1), REFRESH_MS);
+      return () => {
+        controller.abort();
+        clearTimeout(timer);
+      };
+    }, [session, channel.id, generation]);
     const canEdit =
       (channel.viewerRole === "owner" || channel.viewerRole === "admin") &&
       !channel.readOnly &&
       !!session.outbox?.supports(LINK_KIND);
-    const save = (next) => {
-      writeLink(session, channel.id, next);
+    // Rejects when the outbox refuses the event; the dialog stays open and says so.
+    const save = async (next) => {
+      await writeLink(session, channel.id, next);
       setLink({ status: "ready", value: next });
       if (!next) remember(channel);
       setEditing(false);
