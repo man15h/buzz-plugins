@@ -6,6 +6,12 @@ the title bar and above the window, on every page. Click a pinned tab to
 open its thread, even when it's in another channel or the sidebar is
 collapsed.
 
+> **Waiting on Buzz.** The row under the title bar and **Pin thread** in the
+> thread tab menu, as in the [mockups](#mockups), need
+> [block/buzz-app#3580](https://github.com/block/buzz-app/pull/3580). Until a
+> Buzz release includes it, the pinned tabs sit right of Search and **Pin
+> thread** is in a message's **…** menu. See [Requirements](#requirements).
+
 - A pinned tab shows unread the way the sidebar does: a bold title, plus a
   dot for mentions and replies. Three dots mean an agent is working in the
   thread.
@@ -21,11 +27,13 @@ Only the current community's pins are shown.
 
 ## Requirements
 
-The layout above needs a Buzz with two plugin extension points: `titleBarRow`
-on panels, for the row, and `conversation.registerThreadTabAction`, for Pin
-thread.
+The layout above, the one in the mockups, needs
+[block/buzz-app#3580](https://github.com/block/buzz-app/pull/3580). It adds two
+plugin extension points: `titleBarRow` on panels, for the row, and
+`conversation.registerThreadTabAction`, for Pin thread. That PR isn't merged
+yet, so no Buzz release has them.
 
-On a Buzz without them, the plugin uses places every Buzz has:
+Until one does, the plugin uses places every Buzz has:
 
 - The pinned tabs sit in the title bar, right of Search. They take at most
   half the window less 16rem, so Search narrows but keeps room, and the rest
@@ -34,7 +42,9 @@ On a Buzz without them, the plugin uses places every Buzz has:
   thread the message is in, or the thread it starts. A pinned thread's
   messages show **Unpin thread** there instead.
 
-Pins are the same either way, so they stay put when Buzz gains the row.
+Once your Buzz has the extension points, the plugin switches to the row and
+the thread tab menu by itself. There is nothing to change or reinstall, and
+your pins carry over.
 
 ## Install
 
