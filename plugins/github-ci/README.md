@@ -16,14 +16,23 @@ Mockups: [`docs/github-ci/`](../../docs/github-ci/).
 
 ## Install
 
-1. Clone this repository. The plugin is the `plugins/github-ci/` folder.
-2. In Buzz: **Settings → Plugins → Manage plugins → Add**, then **Browse**
-   under Add from folder, and pick the clone's `plugins/github-ci/` folder.
+1. Open the install link. Buzz opens **Settings → Plugins → Add** with this
+   folder picked from Git:
+
+   ```sh
+   open 'buzz://plugin-install?repository=man15h%2Fbuzz-plugins&path=plugins%2Fgithub-ci'
+   ```
+
    Review the access it asks for and install it:
    - two `gh` commands: `gh api graphql` for reads and `gh api user` for your
      login;
    - requests to `https://api.github.com`, for reads with a token.
-3. Sign in with `gh auth login`, or add a token (below).
+2. Sign in with `gh auth login`, or add a token (below).
+
+If the link doesn't open Buzz, install from a folder instead: clone this
+repository, then in **Settings → Plugins → Manage plugins → Add**, click
+**Browse** under Add from folder and pick the clone's `plugins/github-ci/`
+folder.
 
 ## Reading GitHub
 

@@ -11,3 +11,6 @@ Buzz desktop plugins, one folder each under `plugins/`.
 Where a plugin's `manifest.json` names placeholder origins (`*.example.com`), put in
 your own before installing from a folder, or install from a server that
 serves the plugin with its origin stamped in.
+
+`plugins/github-ci/` has no placeholder origins, so it also installs from a
+link: see its [Install](plugins/github-ci/README.md#install) section.
