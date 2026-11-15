@@ -1,0 +1,25 @@
+{
+  "id": "pii-redact",
+  "name": "PII Redact",
+  "apiVersion": 1,
+  "description": "Finds emails, phones, keys, IPs, names and places in a draft, on this Mac with no network, so they can be redacted before you send.",
+  "discovery": {
+    "category": "communication",
+    "tags": ["privacy", "redaction", "local"]
+  },
+  "host": {
+    "processes": [
+      {
+        "id": "ner",
+        "program": "sandbox-exec",
+        "args": [
+          "-p",
+          "(version 1)\n(allow default)\n(deny network*)\n(deny process-exec)\n(allow process-exec (literal \"/bin/sh\") (literal \"/bin/bash\") (literal \"/bin/dash\") (subpath \"/opt/homebrew\") (subpath \"/usr/local\") (regex #\"^/Users/[^/]+/\\.local/share/pii-redact/venv/bin/\"))\n(deny file-read* (subpath \"/Users\") (subpath \"/Volumes\"))\n(allow file-read-metadata (literal \"/Users\") (regex #\"^/Users/[^/]+(/\\.local(/share(/pii-redact)?)?)?$\"))\n(allow file-read* (regex #\"^/Users/[^/]+/\\.local/share/pii-redact/venv(/|$)\"))\n(deny file-write*)\n(allow file-write* (literal \"/dev/null\") (subpath \"/private/var/folders\"))\n",
+          "/bin/sh",
+          "-c",
+          "p=\"$HOME/.local/share/pii-redact/venv/bin/python3\"; [ -x \"$p\" ] || exit 3; exec \"$p\" -I -B -c 'import sys,json\ntry:\n import spacy;n=spacy.load(\"en_core_web_sm\",exclude=[\"tok2vec\",\"tagger\",\"parser\",\"attribute_ruler\",\"lemmatizer\",\"senter\"])\nexcept Exception as e:\n print(e,file=sys.stderr);sys.exit(4)\nfor l in sys.stdin:\n r={}\n try:r=json.loads(l);print(json.dumps({\"id\":r[\"id\"],\"ents\":[[e.start_char,e.end_char,e.label_] for e in n(r[\"text\"]).ents]}),flush=True)\n except Exception as e:print(json.dumps({\"id\":r.get(\"id\"),\"error\":str(e)[:200]}),flush=True)\n'"
+        ]
+      }
+    ]
+  }
+}

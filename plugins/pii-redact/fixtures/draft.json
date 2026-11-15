@@ -1,0 +1,53 @@
+{
+  "text": "👋 Hi, this is Maria Garcia. Reach me at maria.garcia@example.org or +1 415 555 0134. The staging box is 192.0.2.17 and its key is AKIAIOSFODNN7EXAMPLE. I am in Lisbon until Friday.",
+  "ner": [
+    [
+      14,
+      26,
+      "PERSON"
+    ],
+    [
+      160,
+      166,
+      "GPE"
+    ]
+  ],
+  "spans": [
+    {
+      "type": "name",
+      "start": 15,
+      "end": 27,
+      "text": "Maria Garcia"
+    },
+    {
+      "type": "email",
+      "start": 41,
+      "end": 65,
+      "text": "maria.garcia@example.org"
+    },
+    {
+      "type": "phone",
+      "start": 69,
+      "end": 84,
+      "text": "+1 415 555 0134"
+    },
+    {
+      "type": "ip",
+      "start": 105,
+      "end": 115,
+      "text": "192.0.2.17"
+    },
+    {
+      "type": "key",
+      "start": 131,
+      "end": 151,
+      "text": "AKIAIOSFODNN7EXAMPLE"
+    },
+    {
+      "type": "place",
+      "start": 161,
+      "end": 167,
+      "text": "Lisbon"
+    }
+  ]
+}
