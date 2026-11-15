@@ -1,13 +1,13 @@
 // PII Redact: finds personal data in a draft and returns it as typed spans,
 // for a composer UI to highlight and redact. This revision is the engine
-// only; the composer UI follows once the host can read and rewrite a draft
-// (README.md, "Composer hook").
+// only; the composer UI follows with the host's send hook (README.md,
+// "Composer hook").
 //
 // Emails, phones, keys and IPs are regular expressions, here in the plugin.
 // Names and places come from spaCy's small English model, in the manifest's
-// one `processes` entry under macOS `sandbox-exec`: no network, no other
-// programs, and no reads under /Users except its own venv (README.md, "What
-// it can reach"). The process is started once and kept warm, and takes one
+// one `processes` entry under macOS `sandbox-exec` from `(deny default)`: no
+// network, no IPC, no programs but its Python, and no reads under /Users
+// except its own venv (README.md, "What it can reach"). The process is started once and kept warm, and takes one
 // JSON line per draft on stdin.
 
 export const inject = [];

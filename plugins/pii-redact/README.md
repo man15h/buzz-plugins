@@ -32,9 +32,13 @@ sandbox lets it read:
 
 ```sh
 python3 -m venv ~/.local/share/pii-redact/venv
-~/.local/share/pii-redact/venv/bin/pip install spacy
-~/.local/share/pii-redact/venv/bin/python -m spacy download en_core_web_sm
+~/.local/share/pii-redact/venv/bin/pip install --only-binary :all: spacy
+~/.local/share/pii-redact/venv/bin/python -m spacy download en_core_web_sm --only-binary :all:
 ```
+
+These run outside the sandbox, so `--only-binary :all:` takes prebuilt wheels
+only: no package's build script runs on your Mac. `spacy download` passes the
+flag on to pip.
 
 Without it the patterns still work, and `detect` reports `noVenv` (no venv)
 or `noModel` (spaCy or the model missing) so a UI can say why names and
@@ -43,13 +47,26 @@ places were not checked.
 ## What it can reach
 
 The plugin asks for one process, `ner`, and no network origins. Buzz runs it
-under macOS `sandbox-exec` with a profile that:
+under macOS `sandbox-exec` with a fixed profile, running a fixed `/bin/sh`
+line. The profile starts from `(deny default)`, the same base as Voice Input:
+everything is refused unless a rule below allows it. That covers network, IPC
+with system services and other apps (Mach lookups and Apple Events, so no
+asking a browser or a daemon to fetch something), and every file not listed.
+Every allow:
 
-- denies all network access,
-- denies running any program except a shell, the venv's Python, and the
-  Python it links to under `/opt/homebrew` or `/usr/local`,
-- denies reads under `/Users` and `/Volumes`, except the venv,
-- denies writes, except `/dev/null` and the per-user temporary folder.
+| Rule | What it lets through | Why |
+|---|---|---|
+| `process-exec` | Only `/bin/sh` (and the `/bin/bash` or `/bin/dash` it hands off to), the venv's `bin/python3`, and Homebrew's `python@3.x` under `/opt/homebrew` or `/usr/local` (`Cellar/` and its `opt/` links) | The shell line, the venv's Python, and the interpreter it links to |
+| `sysctl-read` | Reading kernel settings such as the CPU count | NumPy picks its thread count from it |
+| `file-read-metadata` | `stat` on any path: whether it exists, size and dates. Not its contents, and not a directory's listing | Loading libraries walks paths; listing every parent folder would be brittle |
+| `file-read*` on `/System/Library`, `/System/Cryptexes`, `/System/Volumes/Preboot/Cryptexes`, `/usr/lib`, `/usr/share`, `/bin`, `/usr/bin`, `/private/var/select` | macOS's own libraries, programs and shared data | Every program needs the system libraries; `/private/var/select` says which shell `/bin/sh` is |
+| `file-read*` on `/opt/homebrew`, `/usr/local` | Homebrew's programs and libraries | Python's standard library and the libraries it links (OpenSSL, libffi and the like) |
+| `file-read*` on `/dev/null`, `/dev/urandom` | Those two devices | Standard library start-up |
+| `file-read*` on `~/.local/share/pii-redact/venv` | spaCy, its dependencies and the model, and nothing else under `/Users` | The model |
+| `file-write-data` on `/dev/null` | Writes to `/dev/null` only | Discarded output |
+
+Python runs with `-I -B`: no user site-packages, no environment variables
+steering imports, and no bytecode files written.
 
 It starts on the first draft and stays up, so later drafts skip the model
 load. A draft that takes longer than 10 seconds kills it, and the next draft
@@ -58,22 +75,18 @@ places up to there; the patterns cover all of it.
 
 ## Composer hook
 
-A plugin can't read or rewrite the composer draft today, and it can't hook
-send (buzz-app `src/features/conversation/contracts.ts`):
+On buzz-app `main`, a plugin can read the draft and mark ranges in it with
+`registerAnnotator`. The annotator gets an observation (`revision`, `text`,
+`prose`) and publishes marks over `prose`, each with suggested replacements
+the person can pick. That covers highlighting and click-to-redact. It can't:
 
-- `registerTool` (a composer button) gets `insertText`, `insertMention(s)`,
-  `replaceRecipients`, `insertResource` and `focus`, plus read-only
-  `recipients`. It inserts at the caret only: no read of the prose, no
-  replace-range.
-- There is no pre-send hook; sending is owned by the host.
-- `registerAccessory` is read-only UI with no editor commands.
-- `registerCompletion` sees the full draft in `match()`, but only replaces
-  the query under a collapsed caret, and can't stop a send.
+- rewrite the draft itself, so there is no one-click "redact everything";
+- mark anything outside `prose`, such as code spans, links and mentions, where
+  a pasted token often sits;
+- see or stop a send: there is no pre-send hook, and a tool has no `send()`.
 
-The composer UI needs a host API first: a draft read (text and revision),
-`replaceRange(start, end, text, revision)` rejected on a stale revision, a
-tool `send()`, and `registerSendCheck` for a mode where every send is
-redacted first.
+A Redact & send button and a mode that redacts every send need those from
+the host first.
 
 ## Tests
 
