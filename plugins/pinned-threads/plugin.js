@@ -1,13 +1,14 @@
-// Pinned threads: keep threads from any channel one click away. "Pin thread"
-// leads a thread tab's right-click menu, and pinned threads show as tabs on
-// their own row below the title bar, with the sidebar's unread and
-// agent-working marks. A pinned tab's own menu renames, colours or unpins it.
+// Pinned threads: keep threads and channels one click away.
+// "Pin thread" leads a thread tab's right-click menu, "Pin channel" is in a
+// message's menu, and pins show as tabs on their own row below the title bar,
+// with the sidebar's unread and agent-working marks. A pinned tab's own menu
+// renames, colours or unpins it.
 //
 // That needs a Buzz with `titleBarRow` on panels and
 // `conversation.registerThreadTabAction`. Without them, the tabs sit in the
-// title bar right of Search and Pin thread is in a message's menu (README.md,
-// "Requirements"). Pins are kept in this Mac's localStorage, per community
-// and account.
+// title bar right of Search and Pin thread is in a message's menu as well
+// (README.md, "Requirements"). Pins are kept in this Mac's localStorage, per
+// community and account.
 
 export const inject = ["conversation", "navigation", "panels", "react", "relay"];
 
@@ -35,6 +36,7 @@ export function apply(ctx) {
   const { useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } = React;
 
   // ---- Pins: { scope, channelId, rootId, title, name?, color? } -----------
+  // A channel pin has `channel: true` and `private?` in place of `rootId`.
 
   let pins = load();
   const listeners = new Set();
@@ -45,7 +47,9 @@ export function apply(ctx) {
   function load() {
     try {
       const value = JSON.parse(localStorage.getItem(PINS_KEY) || "[]");
-      return Array.isArray(value) ? value.filter((pin) => pin && pin.scope && pin.channelId && pin.rootId) : [];
+      return Array.isArray(value)
+        ? value.filter((pin) => pin && pin.scope && pin.channelId && (pin.rootId || pin.channel))
+        : [];
     } catch {
       return [];
     }
@@ -59,12 +63,18 @@ export function apply(ctx) {
     }
     for (const listener of listeners) listener();
   }
-  const same = (pin, scope, rootId) => pin.scope === scope && pin.rootId === rootId;
+  const same = (pin, scope, rootId) => pin.scope === scope && !pin.channel && pin.rootId === rootId;
   const find = (scope, rootId) => pins.find((pin) => same(pin, scope, rootId));
+  const findChannel = (scope, channelId) =>
+    pins.find((pin) => pin.scope === scope && pin.channel && pin.channelId === channelId);
+  const pinKey = (pin) => (pin.channel ? `channel:${pin.channelId}` : pin.rootId);
   const update = (pin, patch) => save(pins.map((item) => (item === pin ? { ...item, ...patch } : item)));
   const unpin = (pin) => save(pins.filter((item) => item !== pin));
   const pin = (scope, channelId, rootId, title) =>
     find(scope, rootId) || save([...pins, { scope, channelId, rootId, title }]);
+  const pinChannel = (scope, channel) =>
+    findChannel(scope, channel.id) ||
+    save([...pins, { scope, channelId: channel.id, channel: true, private: isPrivate(channel) || undefined, title: channel.name }]);
 
   const relaySnapshot = () => ctx.relay.snapshot();
   const currentScope = () => relaySnapshot()?.scope;
@@ -113,6 +123,43 @@ export function apply(ctx) {
     });
   }
 
+  // ---- Pin / Unpin channel in a message's menu ------------------------------
+
+  // Buzz has no plugin item in a channel's sidebar menu, so this is the one
+  // place to pin a channel. A channel with no messages can't be pinned yet.
+  const channelOf = (session, channelId) => {
+    try {
+      return session.channels.list().channels.find((channel) => channel.id === channelId);
+    } catch {
+      return undefined;
+    }
+  };
+  const isPrivate = (channel) => !!channel.private || channel.visibility === "private";
+  // DMs, Solo chats and system channels aren't channels to pin.
+  const pinnable = (channel) => !!channel && !["dm", "solo", "system"].includes(channel.channelType);
+  const channelAction = (id, title, pinned, run) =>
+    ctx.conversation.registerMessageAction({
+      id,
+      title,
+      icon: () => icon(PIN, 16),
+      matches: (message, session) =>
+        pinnable(channelOf(session, message.channelId)) && !!findChannel(currentScope(), message.channelId) === pinned,
+      component: function PinChannelAction({ message, session, close }) {
+        useEffect(() => {
+          const scope = currentScope();
+          const channel = channelOf(session, message.channelId);
+          if (scope && channel) run(scope, channel);
+          close();
+        }, []);
+        return null;
+      },
+    });
+  channelAction("pin-channel", "Pin channel", false, pinChannel);
+  channelAction("unpin-channel", "Unpin channel", true, (scope, channel) => {
+    const pinned = findChannel(scope, channel.id);
+    if (pinned) unpin(pinned);
+  });
+
   // The thread tab's own title: the root's text, else "Thread · channel".
   function threadTitle(session, channelId, rootId) {
     try {
@@ -141,8 +188,7 @@ export function apply(ctx) {
       kind: "conversation",
       scope: { viewer, communityOrigin: pin.scope.slice(0, -(viewer.length + 1)) },
       channelId: pin.channelId,
-      messageId: pin.rootId,
-      threadRootId: pin.rootId,
+      ...(pin.channel ? {} : { messageId: pin.rootId, threadRootId: pin.rootId }),
     });
   }
 
@@ -155,9 +201,11 @@ export function apply(ctx) {
     });
   }
 
-  // "unread" | "attention" | "", from the thread's read state.
+  // "unread" | "attention" | "", from the thread's or channel's read state.
   function useUnread(session, pin) {
-    const target = { kind: "thread", channelId: pin.channelId, rootId: pin.rootId };
+    const target = pin.channel
+      ? { kind: "channel", channelId: pin.channelId }
+      : { kind: "thread", channelId: pin.channelId, rootId: pin.rootId };
     const read = () => {
       try {
         const snapshot = session?.unread?.snapshot(target);
@@ -177,9 +225,12 @@ export function apply(ctx) {
     const read = () => {
       const snapshot = session?.agentActivity?.snapshot();
       if (!snapshot) return false;
-      const here = (row) => row.channelId === pin.channelId && row.threadRootId === pin.rootId;
+      // A channel pin counts an agent working anywhere in the channel.
+      const here = (row) => row.channelId === pin.channelId && (pin.channel || row.threadRootId === pin.rootId);
       return (
-        (snapshot.local ?? []).some((row) => row.thread && here(row) && (row.state === "working" || row.state === "waiting")) ||
+        (snapshot.local ?? []).some(
+          (row) => (pin.channel || row.thread) && here(row) && (row.state === "working" || row.state === "waiting"),
+        ) ||
         (snapshot.status === "listening" &&
           (snapshot.turns.some((turn) => here(turn) && turn.state === "working") || snapshot.typing.some(here)))
       );
@@ -243,9 +294,9 @@ export function apply(ctx) {
       h("style", null, CSS),
       visible.map((pin) =>
         renaming === pin
-          ? h(Rename, { key: pin.rootId, pin, done: () => setRenaming(undefined) })
+          ? h(Rename, { key: pinKey(pin), pin, done: () => setRenaming(undefined) })
           : h(PinnedTab, {
-              key: pin.rootId,
+              key: pinKey(pin),
               pin,
               session,
               onOpen: () => open(pin),
@@ -283,7 +334,7 @@ export function apply(ctx) {
             h(
               MenuItem,
               {
-                key: pin.rootId,
+                key: pinKey(pin),
                 onClick: () => {
                   setMenu(undefined);
                   open(pin);
@@ -313,7 +364,8 @@ export function apply(ctx) {
     );
   }
 
-  // Icon in the pin's colour, title (bold while unread), then the marks.
+  // Icon in the pin's colour (# or a lock for a channel), title (bold while
+  // unread), then the marks.
   function PinLabel({ pin, session }) {
     const unread = useUnread(session, pin);
     const working = useWorking(session, pin);
@@ -321,7 +373,7 @@ export function apply(ctx) {
     return h(
       React.Fragment,
       null,
-      icon(THREAD, 16, { style: color ? { color } : undefined }),
+      icon(pin.channel ? (pin.private ? LOCK : HASH) : THREAD, 16, { style: color ? { color } : undefined }),
       h("span", { className: "pt-label", "data-unread": unread ? "" : undefined }, pin.name || pin.title),
       unread === "attention" && h("span", { className: "pt-dot", role: "img", "aria-label": "Mentions or replies" }),
       working &&
@@ -345,7 +397,7 @@ export function apply(ctx) {
     const finish = (value) => {
       if (finished.current) return;
       finished.current = true;
-      // A blank name restores the thread's own title.
+      // A blank name restores the thread's or channel's own title.
       if (value !== undefined) update(pin, { name: value.trim() || undefined });
       done();
     };
@@ -393,7 +445,7 @@ export function apply(ctx) {
             ),
           ),
         ),
-      h(MenuItem, { onClick: () => (close(), unpin(pin)) }, "Unpin thread"),
+      h(MenuItem, { onClick: () => (close(), unpin(pin)) }, pin.channel ? "Unpin channel" : "Unpin thread"),
     );
   }
 
@@ -471,11 +523,17 @@ export function apply(ctx) {
   });
 }
 
-// message-reply, chevron-down, chevron-right, check, pin
+// message-reply, hash, lock, chevron-down, chevron-right, check, pin
 const THREAD = [
   "M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z",
   "M11 8l-3 3l3 3",
   "M16 11h-8",
+];
+const HASH = ["M5 9l14 0", "M5 15l14 0", "M11 4l-4 16", "M17 4l-4 16"];
+const LOCK = [
+  "M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6z",
+  "M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0",
+  "M8 11v-4a4 4 0 1 1 8 0v4",
 ];
 const CHEVRON = ["M6 9l6 6l6 -6"];
 const CHEVRON_RIGHT = ["M9 6l6 6l-6 6"];
