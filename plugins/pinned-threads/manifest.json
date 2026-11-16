@@ -2,7 +2,7 @@
   "id": "pinned-threads",
   "name": "Pinned Threads",
   "apiVersion": 1,
-  "description": "Pin threads from any channel to a row of tabs below the title bar, one click away.",
+  "description": "Pin threads and channels to a row of tabs below the title bar, one click away.",
   "discovery": {
     "category": "productivity",
     "tags": ["threads", "tabs", "navigation"]
