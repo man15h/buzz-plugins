@@ -5,8 +5,11 @@ keys and tokens, IP addresses, and the names and places a small language
 model picks out. Everything runs on your Mac, and the model runs with no
 network.
 
-This revision is the engine only. It returns what it found as typed spans
-with offsets, and has no composer UI yet (see [Composer hook](#composer-hook)).
+In the composer it underlines what it finds, and its **Redact & send**
+button takes Send's place: one click (or Enter) swaps every find for a
+placeholder such as `[EMAIL·a3f9c20e]`, then sends. On your Mac, your messages
+and replies that quote your placeholders show the real values again (see
+[In Buzz](#in-buzz)).
 
 ## What it finds
 
@@ -40,9 +43,9 @@ These run outside the sandbox, so `--only-binary :all:` takes prebuilt wheels
 only: no package's build script runs on your Mac. `spacy download` passes the
 flag on to pip.
 
-Without it the patterns still work, and `detect` reports `noVenv` (no venv)
-or `noModel` (spaCy or the model missing) so a UI can say why names and
-places were not checked.
+Without it the plugin doesn't redact: Redact & send steps aside, the normal
+Send comes back, and "Not redacting: engine not set up" sits in the toolbar.
+After setting it up, turn the plugin off and on in Settings.
 
 ## What it can reach
 
@@ -83,11 +86,12 @@ side of that: two messages that carry the same placeholder carry the same
 value. The digits are random, not a hash, so a placeholder can't be guessed
 back from a phone number or a name.
 
-`unredact` is only for messages signed by this Mac's own pubkey. Another
-person's message can carry a placeholder that matches an entry in your map by
-chance, and it must not show your real value. Eight hex digits make that
-unlikely (5,000 entries in about four billion tags); the message renderer,
-when it lands, must check the author's pubkey to rule it out.
+`unredact` runs on any message, so an agent's reply that quotes your
+placeholder shows you your own value. It only changes what your screen
+shows: the value is one you redacted, and nobody else's view changes. Another
+person's placeholder matching an entry in your map by chance is unlikely
+(5,000 entries in about four billion tags), and would show you a value of
+yours, not theirs.
 
 Keys and tokens are the exception. Each one gets a fresh placeholder and its
 value is never stored, so a secret stays redacted even on your Mac.
@@ -95,7 +99,9 @@ value is never stored, so a secret stays redacted even on your Mac.
 ## The placeholder map
 
 The placeholder→value map holds the real emails, phones, IPs, names and
-places you redacted, so it stays on this Mac:
+places you redacted, so it stays on this Mac. A value only goes in once its
+placeholder is in a draft; underlined values wait in memory until then, so
+one you delete before redacting is never stored.
 
 - **Where:** Buzz's web storage (`localStorage`) on this Mac, key
   `pii-redact/placeholders/v1`, as plain JSON. The plugin never publishes it,
@@ -109,20 +115,37 @@ places you redacted, so it stays on this Mac:
 - **Forgetting:** `forget()` clears it. After that, your own sent messages show
   their placeholders like everyone else's.
 
-## Composer hook
+## In Buzz
 
-On buzz-app `main`, a plugin can read the draft and mark ranges in it with
-`registerAnnotator`. The annotator gets an observation (`revision`, `text`,
-`prose`) and publishes marks over `prose`, each with suggested replacements
-the person can pick. That covers highlighting and click-to-redact. It can't:
+- **Underlines:** finds are underlined as you type. Right-click one (or put
+  the caret in it and press ⌘.) for **Redact as `[EMAIL·a3f9c20e]`** or
+  **Keep as is**. Keep as is leaves that value alone in this draft.
+- **Redact & send** sits where Send was, which is hidden. It swaps every
+  remaining find for its placeholder, checks the box now reads exactly the
+  redacted text, then presses the hidden Send. The box is locked while it
+  works.
+- **Enter** (and ⌘+Enter) do the same, then hand the key back to Buzz, so
+  Shift+Enter, lists and your send-key setting work as before. A draft with
+  nothing to redact sends at once.
+- **Held sends:** it doesn't send, and says why, when a key, email, phone or IP
+  sits in code, a link target or a mention (it can't rewrite those), when
+  names couldn't be checked, or when the box didn't end up as planned.
+  Whatever was already swapped stays swapped; ⌘Z undoes it.
+- **Your Mac:** a placeholder from your map shows its real value, as normal
+  text, and hovering shows the placeholder that was sent. Everyone else, and
+  your other devices, see the placeholder. Keys always stay redacted.
 
-- rewrite the draft itself, so there is no one-click "redact everything";
-- mark anything outside `prose`, such as code spans, links and mentions, where
-  a pasted token often sits;
-- see or stop a send: there is no pre-send hook, and a tool has no `send()`.
+Keep as is works by putting an invisible word joiner (U+2060) after the
+value, since Buzz's menu can only replace text. Redact & send removes it
+before sending.
 
-A Redact & send button and a mode that redacts every send need those from
-the host first.
+How it fits Buzz, which has no pre-send hook for plugins: it underlines
+through `registerAnnotator`, shows values through `registerInline`, and is a
+`registerTool` button that hides the host Send with CSS (only in composers
+where the button is drawn) and clicks it once the draft is redacted. It
+edits the draft the way typing does, by selecting each find and inserting
+its placeholder. Not covered: editing a sent message (Save sends as typed),
+and composers without tools, such as Forward's note.
 
 ## Tests
 

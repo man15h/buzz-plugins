@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { NO_VENV, PLACEHOLDER, createEngine, createPlaceholderMap, findPatterns, nerSpans, redact, resolveOverlaps, unredact } from "./plugin.js";
+import { KEEP, NO_VENV, PLACEHOLDER, annotationsFor, createEngine, createPlaceholderMap, findPatterns, nerSpans, planRedaction, proseOccurrence, redact, resolveOverlaps, unredact } from "./plugin.js";
 
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/draft.json", import.meta.url), "utf8"));
 
@@ -144,4 +144,64 @@ test("unknown placeholders and existing ones are left alone", () => {
 test("without storage the map still works", () => {
   const map = createPlaceholderMap(null);
   assert.equal(map.value(map.placeholder("ip", "192.0.2.1")), "192.0.2.1");
+});
+
+test("a reserved placeholder is stored only once a draft holds it", () => {
+  const storage = memoryStorage();
+  const map = createPlaceholderMap(storage);
+  const p = map.reserve("email", "someone@example.com");
+  assert.equal(map.reserve("email", "someone@example.com"), p);
+  assert.equal(map.value(p), undefined);
+  assert.equal(storage.items.size, 0);
+  map.commit(`write to ${p}`);
+  assert.equal(map.value(p), "someone@example.com");
+  assert.equal(map.reserve("email", "someone@example.com"), p);
+});
+
+// One prose run over the whole text, as a plain draft observes.
+const observe = (text) => ({ text, prose: [{ start: 0, end: text.length }] });
+const span = (text, type, value, from = 0) => {
+  const start = text.indexOf(value, from);
+  return { type, start, end: start + value.length, text: value };
+};
+
+test("underlines offer the placeholder and Keep as is", () => {
+  const map = createPlaceholderMap(memoryStorage());
+  const text = "mail ana@example.com";
+  const [mark] = annotationsFor(observe(text), [span(text, "email", "ana@example.com")], map);
+  assert.equal(mark.label, "Email address");
+  assert.equal(mark.text, "ana@example.com");
+  assert.match(mark.replacements[0].text, PLACEHOLDER);
+  assert.equal(mark.replacements[0].label, `Redact as ${mark.replacements[0].text}`);
+  assert.deepEqual(mark.replacements[1], { text: `ana@example.com${KEEP}`, label: "Keep as is" });
+});
+
+test("kept values and placeholders get no underline; spans outside prose none either", () => {
+  const map = createPlaceholderMap(memoryStorage());
+  const text = `Ana${KEEP} met Bo in \`tok_123\``;
+  const observation = { text, prose: [{ start: 0, end: text.indexOf("`") }] };
+  const spans = [span(text, "name", "Ana"), span(text, "name", "Bo"), span(text, "key", "tok_123")];
+  assert.deepEqual(annotationsFor(observation, spans, map).map((m) => m.text), ["Bo"]);
+});
+
+test("Redact & send plans placeholders, strips Keep marks and holds PII in code", () => {
+  const map = createPlaceholderMap(memoryStorage());
+  const text = `Ana${KEEP} and Bo, Bo again`;
+  const second = span(text, "name", "Bo", text.indexOf("Bo") + 1);
+  const plan = planRedaction(observe(text), [span(text, "name", "Ana"), span(text, "name", "Bo"), second], map);
+  const p = map.reserve("name", "Bo");
+  assert.equal(plan.text, `Ana and ${p}, ${p} again`);
+  assert.deepEqual(plan.edits.map((e) => [e.text, e.occurrence, e.insert]), [[KEEP, 0, ""], ["Bo", 0, p], ["Bo", 1, p]]);
+  assert.deepEqual(plan.held, []);
+
+  const code = "key `ghp_x`";
+  const held = planRedaction({ text: code, prose: [{ start: 0, end: 4 }] }, [{ type: "key", start: 5, end: 10, text: "ghp_x" }], map);
+  assert.equal(held.held.length, 1);
+  assert.equal(held.edits.length, 0);
+});
+
+test("occurrences are counted in prose only", () => {
+  const text = "Bo `Bo` Bo";
+  const prose = [{ start: 0, end: 3 }, { start: 7, end: 10 }];
+  assert.equal(proseOccurrence(text, prose, "Bo", 8), 1);
 });

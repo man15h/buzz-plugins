@@ -2,7 +2,7 @@
   "id": "pii-redact",
   "name": "PII Redact",
   "apiVersion": 1,
-  "description": "Finds emails, phones, keys, IPs, names and places in a draft, on this Mac with no network, so they can be redacted before you send.",
+  "description": "Redact & send: swaps emails, phones, keys, IPs, names and places in a draft for placeholders before it goes out, found on this Mac with no network.",
   "discovery": {
     "category": "communication",
     "tags": ["privacy", "redaction", "local"]
